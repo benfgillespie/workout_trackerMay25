@@ -36,7 +36,7 @@ export default function WorkoutTracker() {
   // Load initial data
   useEffect(() => {
     loadData()
-  }, [])
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadData = async () => {
     try {
@@ -222,6 +222,8 @@ export default function WorkoutTracker() {
       // Reset form
       setCardioType('')
       setCardioDuration(0)
+      setCardioIs4x4(false)
+      setShowCardioDialog(false)uration(0)
       setCardioIs4x4(false)
       setShowCardioDialog(false)
 
