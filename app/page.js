@@ -222,8 +222,8 @@ export default function WorkoutTracker() {
       // Reset form
       setCardioType('')
       setCardioDuration(0)
-      setCardioIs4x4(false)
-      setShowCardioDialog(false)uration(0)
+      setShowCardioDialog(false)
+      setCardioDuration(0)
       setCardioIs4x4(false)
       setShowCardioDialog(false)
 
