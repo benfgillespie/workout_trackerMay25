@@ -30,8 +30,9 @@ export default function WorkoutTracker() {
   const [cardioIs4x4, setCardioIs4x4] = useState(false)
   const [recentCardio, setRecentCardio] = useState([])
   const [next4x4Date, setNext4x4Date] = useState(null)
-  const [missed4x4Count, setMissed4x4Count] = useState(0)
   const [zone2Minutes, setZone2Minutes] = useState(0)
+  const [missed4x4Count, setMissed4x4Count] = useState(0)
+
 
   // Load initial data
   useEffect(() => {
