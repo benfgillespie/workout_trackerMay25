@@ -33,32 +33,27 @@ export default function WorkoutTracker() {
   const [missed4x4Count, setMissed4x4Count] = useState(0)
   const [zone2Minutes, setZone2Minutes] = useState(0)
 
-  // Load initial data
   useEffect(() => {
     loadData()
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   const loadData = async () => {
     try {
-      // Load exercises
       const { data: exercisesData } = await supabase
         .from('exercises')
         .select('*')
         .order('name')
 
-      // Load user weights
       const { data: weightsData } = await supabase
         .from('user_exercise_weights')
         .select('exercise_id, prescribed_weight')
 
-      // Load current cycle progress
       const { data: lastSession } = await supabase
         .from('workout_sessions')
         .select('*')
         .order('created_at', { ascending: false })
         .limit(1)
 
-      // Load recent workouts (last 3 completed)
       const { data: recentWorkoutsData } = await supabase
         .from('workout_sessions')
         .select(`
@@ -83,7 +78,6 @@ export default function WorkoutTracker() {
       })
       setUserWeights(weightsMap)
 
-      // Calculate current cycle position
       if (lastSession && lastSession.length > 0) {
         const last = lastSession[0]
         let nextWeek = last.week_number
@@ -106,10 +100,7 @@ export default function WorkoutTracker() {
       }
 
       setRecentWorkouts(recentWorkoutsData || [])
-      
-      // Load cardio data
       await loadCardioData()
-
       setLoading(false)
     } catch (error) {
       console.error('Error loading data:', error)
@@ -119,7 +110,6 @@ export default function WorkoutTracker() {
 
   const loadCardioData = async () => {
     try {
-      // Load recent cardio sessions
       const { data: cardioData } = await supabase
         .from('cardio_sessions')
         .select('*')
@@ -128,11 +118,9 @@ export default function WorkoutTracker() {
 
       setRecentCardio(cardioData || [])
 
-      // Calculate next 4x4 date and missed count
       const today = new Date()
       const currentSunday = getNextSunday(today)
       
-      // Find last 4x4 workout
       const { data: last4x4 } = await supabase
         .from('cardio_sessions')
         .select('workout_date')
@@ -145,12 +133,11 @@ export default function WorkoutTracker() {
         const lastDate = new Date(last4x4[0].workout_date)
         const lastSunday = getNextSunday(lastDate)
         nextDueDate = new Date(lastSunday)
-        nextDueDate.setDate(nextDueDate.getDate() + 7) // Next week
+        nextDueDate.setDate(nextDueDate.getDate() + 7)
       }
 
       setNext4x4Date(nextDueDate)
 
-      // Calculate missed 4x4s in last 12 weeks
       const twelveWeeksAgo = new Date()
       twelveWeeksAgo.setDate(twelveWeeksAgo.getDate() - (12 * 7))
       
@@ -170,7 +157,6 @@ export default function WorkoutTracker() {
       const missedCount = 12 - completedWeeks.size
       setMissed4x4Count(Math.max(0, missedCount))
 
-      // Calculate Zone 2 minutes in last 7 days (all cardio EXCEPT 4x4 sessions)
       const sevenDaysAgo = new Date()
       sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
       
@@ -180,7 +166,6 @@ export default function WorkoutTracker() {
         .gte('workout_date', sevenDaysAgo.toISOString().split('T')[0])
 
       const totalZone2Minutes = recentCardioForZone2?.reduce((sum, session) => {
-        // Only count as Zone 2 if it's NOT a 4x4 session
         return session.is_4x4 ? sum : sum + session.duration_minutes
       }, 0) || 0
       
@@ -199,7 +184,7 @@ export default function WorkoutTracker() {
 
   const getWeekStart = (date) => {
     const result = new Date(date)
-    result.setDate(result.getDate() - result.getDay()) // Go to Sunday
+    result.setDate(result.getDate() - result.getDay())
     return result
   }
 
@@ -219,15 +204,11 @@ export default function WorkoutTracker() {
           is_4x4: cardioIs4x4
         })
 
-      // Reset form
       setCardioType('')
-      setCardioDuration(0)
-      setShowCardioDialog(false)
       setCardioDuration(0)
       setCardioIs4x4(false)
       setShowCardioDialog(false)
 
-      // Refresh data
       loadCardioData()
 
       const message = `Cardio workout logged: ${cardioType} for ${cardioDuration} minutes${cardioIs4x4 ? ' (Norwegian 4x4)' : ''}`
@@ -247,16 +228,15 @@ export default function WorkoutTracker() {
 
   const calculateWorkoutWeight = (prescribedWeight, dayType) => {
     const multipliers = { Light: 0.8, Medium: 0.9, Heavy: 1.0 }
-    return Math.round(prescribedWeight * multipliers[dayType] * 4) / 4 // Round to nearest 0.25kg
+    return Math.round(prescribedWeight * multipliers[dayType] * 4) / 4
   }
 
   const getRepsForWeek = (week) => {
-    return 6 + week + 1 // Week 1 = 8 reps, Week 2 = 9 reps, etc.
+    return 6 + week + 1
   }
 
   const startWorkout = async () => {
     try {
-      // Create workout session
       const { data: session, error } = await supabase
         .from('workout_sessions')
         .insert({
@@ -271,16 +251,14 @@ export default function WorkoutTracker() {
       if (error) throw error
 
       setCurrentWorkout(session)
-      setIsEditingCompletedWorkout(false) // This is a new workout
+      setIsEditingCompletedWorkout(false)
 
-      // Generate workout sets
       const sets = []
       exercises.forEach(exercise => {
         const prescribedWeight = userWeights[exercise.id] || 0
         const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
         const reps = getRepsForWeek(currentCycle.week)
 
-        // Create 2 sets per exercise
         for (let i = 1; i <= 2; i++) {
           sets.push({
             exercise_id: exercise.id,
@@ -312,7 +290,6 @@ export default function WorkoutTracker() {
       let setId
       
       if (set.set_id) {
-        // Update existing set
         await supabase
           .from('workout_sets')
           .update({
@@ -326,7 +303,6 @@ export default function WorkoutTracker() {
         
         setId = set.set_id
       } else {
-        // Insert new set
         const { data: newSet } = await supabase
           .from('workout_sets')
           .insert({
@@ -345,7 +321,6 @@ export default function WorkoutTracker() {
         setId = newSet.id
       }
 
-      // Update local state
       const updatedSets = [...workoutSets]
       updatedSets[setIndex] = {
         ...set,
@@ -357,7 +332,6 @@ export default function WorkoutTracker() {
       }
       setWorkoutSets(updatedSets)
 
-      // Check for level up (Week 5, Heavy day, both sets complete)
       if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
         checkForLevelUp(set.exercise_id, updatedSets)
       }
@@ -372,9 +346,8 @@ export default function WorkoutTracker() {
     const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
 
     if (completedSets.length >= 2) {
-      // Level up! Increase weight by 10%
       const currentWeight = userWeights[exerciseId]
-      const newWeight = Math.round(currentWeight * 1.1 * 4) / 4 // Round to nearest 0.25kg
+      const newWeight = Math.round(currentWeight * 1.1 * 4) / 4
 
       try {
         await supabase
@@ -399,25 +372,22 @@ export default function WorkoutTracker() {
     setCurrentWorkout(null)
     setWorkoutSets([])
     setIsEditingCompletedWorkout(false)
-    loadData() // Refresh cycle position only for new workouts
+    loadData()
   }
 
   const exitWorkout = () => {
     if (isEditingCompletedWorkout) {
-      // For completed workouts, just ask about discarding changes
       if (confirm('Discard changes and return to workout history?')) {
         setCurrentWorkout(null)
         setWorkoutSets([])
         setIsEditingCompletedWorkout(false)
-        loadData() // Refresh to show updated history
+        loadData()
       }
     } else {
-      // For new workouts, preserve the original behavior
       if (confirm('Are you sure you want to exit this workout? Your progress will be saved but the workout will remain incomplete.')) {
         setCurrentWorkout(null)
         setWorkoutSets([])
         setIsEditingCompletedWorkout(false)
-        // Don't refresh cycle position - stay on same workout for next time
       }
     }
   }
@@ -507,7 +477,6 @@ export default function WorkoutTracker() {
   }
 
   const isLevelUpEligible = (exerciseId, sets = workoutSets) => {
-    // Only eligible on Week 5, Heavy day
     if (currentCycle.week !== 5 || currentCycle.day !== 'Heavy') {
       return false
     }
@@ -521,12 +490,24 @@ export default function WorkoutTracker() {
   const getWeeklyWorkoutCount = () => {
     const today = new Date()
     const startOfWeek = new Date(today)
-    startOfWeek.setDate(today.getDate() - today.getDay()) // Go to Sunday
+    // Get Monday of current week (0=Sunday, 1=Monday, etc.)
+    const dayOfWeek = today.getDay()
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1 // Sunday is 6 days from Monday
+    startOfWeek.setDate(today.getDate() - daysFromMonday)
     
     return recentWorkouts.filter(workout => {
       const workoutDate = new Date(workout.workout_date)
       return workoutDate >= startOfWeek
     }).length
+  }
+
+  const getEndOfWeekDate = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    const daysToSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek // Days until Sunday
+    const endOfWeek = new Date(today)
+    endOfWeek.setDate(today.getDate() + daysToSunday)
+    return endOfWeek
   }
 
   const deleteWorkout = async (workoutId) => {
@@ -535,25 +516,21 @@ export default function WorkoutTracker() {
     }
 
     try {
-      // Delete all sets first (due to foreign key constraint)
       await supabase
         .from('workout_sets')
         .delete()
         .eq('session_id', workoutId)
 
-      // Then delete the workout session
       await supabase
         .from('workout_sessions')
         .delete()
         .eq('id', workoutId)
 
-      // Refresh data
       loadData()
       if (showAllWorkouts) {
         loadAllWorkouts()
       }
       
-      // Go back to main view if we were viewing this workout
       if (selectedWorkout?.id === workoutId) {
         setSelectedWorkout(null)
       }
@@ -573,7 +550,6 @@ export default function WorkoutTracker() {
 
   const saveEditSet = async (setId) => {
     try {
-      // Calculate new status
       const set = workoutDetails.find(s => s.id === setId)
       let newStatus = 'Incomplete'
       
@@ -581,7 +557,6 @@ export default function WorkoutTracker() {
         newStatus = editReps > set.prescribed_reps || editWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
       }
 
-      // Update in database
       await supabase
         .from('workout_sets')
         .update({
@@ -591,7 +566,6 @@ export default function WorkoutTracker() {
         })
         .eq('id', setId)
 
-      // Update local state
       setWorkoutDetails(prev => prev.map(s => 
         s.id === setId 
           ? { ...s, actual_weight: editWeight, actual_reps: editReps, status: newStatus }
@@ -599,8 +573,6 @@ export default function WorkoutTracker() {
       ))
 
       setEditingSet(null)
-      
-      // Refresh workout data
       loadData()
       if (showAllWorkouts) {
         loadAllWorkouts()
@@ -629,10 +601,7 @@ export default function WorkoutTracker() {
         .delete()
         .eq('id', setId)
 
-      // Update local state
       setWorkoutDetails(prev => prev.filter(s => s.id !== setId))
-      
-      // Refresh workout data
       loadData()
       if (showAllWorkouts) {
         loadAllWorkouts()
@@ -646,11 +615,9 @@ export default function WorkoutTracker() {
 
   const editWorkout = async (workout) => {
     try {
-      // Set the current workout to this historical workout
       setCurrentWorkout(workout)
-      setIsEditingCompletedWorkout(true) // Mark as editing a completed workout
+      setIsEditingCompletedWorkout(true)
       
-      // Load the existing sets for this workout
       const { data: existingSets } = await supabase
         .from('workout_sets')
         .select(`
@@ -661,7 +628,6 @@ export default function WorkoutTracker() {
         .order('exercise_id')
         .order('set_number')
 
-      // Convert existing sets to the workout format
       const convertedSets = existingSets.map(set => ({
         exercise_id: set.exercise_id,
         exercise_name: set.exercises.name,
@@ -673,10 +639,9 @@ export default function WorkoutTracker() {
         actual_weight: set.actual_weight,
         actual_reps: set.actual_reps,
         logged: true,
-        set_id: set.id // Keep track of existing set ID for updates
+        set_id: set.id
       }))
 
-      // Generate any missing sets for exercises that weren't in the original workout
       const existingExerciseIds = new Set(existingSets.map(s => s.exercise_id))
       const reps = getRepsForWeek(workout.week_number)
       
@@ -685,7 +650,6 @@ export default function WorkoutTracker() {
           const prescribedWeight = userWeights[exercise.id] || 0
           const workoutWeight = calculateWorkoutWeight(prescribedWeight, workout.day_type)
           
-          // Add 2 sets for this exercise
           for (let i = 1; i <= 2; i++) {
             convertedSets.push({
               exercise_id: exercise.id,
@@ -701,7 +665,6 @@ export default function WorkoutTracker() {
         }
       })
 
-      // Sort sets by exercise name and set number
       convertedSets.sort((a, b) => {
         if (a.exercise_name !== b.exercise_name) {
           return a.exercise_name.localeCompare(b.exercise_name)
@@ -711,14 +674,12 @@ export default function WorkoutTracker() {
 
       setWorkoutSets(convertedSets)
       
-      // Update the current cycle to match this workout
       setCurrentCycle({
         week: workout.week_number,
         day: workout.day_type,
         cycle: workout.cycle_number
       })
 
-      // Clear the selected workout to go to active workout view
       setSelectedWorkout(null)
       
     } catch (error) {
@@ -747,7 +708,6 @@ export default function WorkoutTracker() {
         .select()
         .single()
 
-      // Add to local state
       const newWorkoutSet = {
         exercise_id: exerciseId,
         exercise_name: exercise.name,
@@ -764,7 +724,6 @@ export default function WorkoutTracker() {
 
       setWorkoutSets(prev => [...prev, newWorkoutSet])
 
-      // Check for level up
       if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
         checkForLevelUp(exerciseId, [...workoutSets, newWorkoutSet])
       }
@@ -807,7 +766,6 @@ export default function WorkoutTracker() {
         .select()
         .single()
 
-      // Add to local state
       const newWorkoutSet = {
         exercise_id: customExerciseId,
         exercise_name: exercise.name,
@@ -825,7 +783,6 @@ export default function WorkoutTracker() {
       setWorkoutSets(prev => [...prev, newWorkoutSet])
       setShowingCustomDialog(false)
 
-      // Check for level up
       if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
         checkForLevelUp(customExerciseId, [...workoutSets, newWorkoutSet])
       }
@@ -878,7 +835,6 @@ export default function WorkoutTracker() {
 
   return (
     <div className="min-h-screen bg-slate-900 text-white">
-      {/* Header */}
       <div className="bg-slate-800 p-4 shadow-lg">
         <h1 className="text-2xl font-bold text-center">Workout Tracker</h1>
         <div className="text-center text-slate-300 mt-2">
@@ -886,10 +842,8 @@ export default function WorkoutTracker() {
         </div>
       </div>
 
-      {/* Main Content */}
       <div className="p-4">
         {selectedWorkout ? (
-          /* Workout Details View */
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -921,6 +875,10 @@ export default function WorkoutTracker() {
               <div className="text-lg font-semibold">
                 Week {selectedWorkout.week_number} • {selectedWorkout.day_type} Day
               </div>
+            <div className="bg-slate-800 rounded-lg p-4">
+              <div className="text-lg font-semibold">
+                Week {selectedWorkout.week_number} • {selectedWorkout.day_type} Day
+              </div>
               <div className="text-slate-300">
                 {formatDateString(selectedWorkout.workout_date)} • Cycle {selectedWorkout.cycle_number}
               </div>
@@ -929,7 +887,6 @@ export default function WorkoutTracker() {
             <div className="space-y-3">
               {workoutDetails.length > 0 ? (
                 (() => {
-                  // Group sets by exercise
                   const exerciseGroups = workoutDetails.reduce((acc, set) => {
                     const exerciseName = set.exercises?.name || 'Unknown Exercise'
                     if (!acc[exerciseName]) acc[exerciseName] = []
@@ -944,7 +901,6 @@ export default function WorkoutTracker() {
                         {sets.map((set, index) => (
                           <div key={set.id || index} className="bg-slate-700 rounded p-3">
                             {editingSet === set.id ? (
-                              // Editing mode
                               <div className="space-y-3">
                                 <div className="flex justify-between items-center">
                                   <span className="font-medium">Set {set.set_number}</span>
@@ -984,7 +940,6 @@ export default function WorkoutTracker() {
                                 </div>
                               </div>
                             ) : (
-                              // View mode
                               <div className="flex justify-between items-center">
                                 <div className="flex items-center gap-3">
                                   <span className="text-sm">Set {set.set_number}</span>
@@ -996,7 +951,6 @@ export default function WorkoutTracker() {
                                     {set.status}
                                   </span>
                                   {(() => {
-                                    // Check if this exercise has level up for this workout
                                     const exerciseSets = workoutDetails.filter(s => s.exercise_id === set.exercise_id)
                                     const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
                                     const isWeek5Heavy = selectedWorkout?.week_number === 5 && selectedWorkout?.day_type === 'Heavy'
@@ -1041,7 +995,6 @@ export default function WorkoutTracker() {
             </div>
           </div>
         ) : showAllWorkouts ? (
-          /* All Workouts View */
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <button
@@ -1083,21 +1036,17 @@ export default function WorkoutTracker() {
             </div>
           </div>
         ) : !currentWorkout ? (
-          /* Home Page */
           <div className="space-y-4">
-            {/* Strength Workout Section */}
             <div className="bg-slate-800 rounded-lg p-4">
               <h3 className="text-lg font-semibold mb-3 text-blue-400">💪 Strength Training</h3>
               
-              {/* Start Workout Button */}
               <button
                 onClick={startWorkout}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg text-xl mb-4"
               >
-                Start Today's Workout
+                Start Today&apos;s Workout
               </button>
 
-              {/* Weekly Target Status */}
               <div className="bg-slate-700 rounded-lg p-3 mb-4">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-blue-400">Weekly Target</span>
@@ -1118,9 +1067,8 @@ export default function WorkoutTracker() {
                 </div>
               </div>
 
-              {/* Current Workout Preview */}
               <div className="bg-slate-700 rounded-lg p-3">
-                <h4 className="font-medium mb-2">Today's Workout Preview</h4>
+                <h4 className="font-medium mb-2">Today&apos;s Workout Preview</h4>
                 <div className="text-sm text-slate-300 mb-2">
                   {getRepsForWeek(currentCycle.week)} reps × 2 sets each exercise
                 </div>
@@ -1141,7 +1089,6 @@ export default function WorkoutTracker() {
               </div>
             </div>
 
-            {/* Cardio Section */}
             <div className="bg-slate-800 rounded-lg p-4">
               <h3 className="text-lg font-semibold mb-3 text-green-400">🏃 Cardio Training</h3>
               
@@ -1152,7 +1099,6 @@ export default function WorkoutTracker() {
                 Log Cardio Workout
               </button>
 
-              {/* Norwegian 4x4 Status */}
               <div className="bg-slate-700 rounded-lg p-3 mb-3">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-yellow-400">Norwegian 4x4</span>
@@ -1167,7 +1113,6 @@ export default function WorkoutTracker() {
                 )}
               </div>
 
-              {/* Zone 2 Status */}
               <div className="bg-slate-700 rounded-lg p-3 mb-3">
                 <div className="flex justify-between items-center">
                   <span className="font-medium text-blue-400">Zone 2 Training</span>
@@ -1188,7 +1133,6 @@ export default function WorkoutTracker() {
                 </div>
               </div>
 
-              {/* Recent Cardio */}
               {recentCardio.length > 0 && (
                 <div className="space-y-2">
                   <h4 className="font-medium text-sm">Recent Sessions:</h4>
@@ -1208,7 +1152,6 @@ export default function WorkoutTracker() {
               )}
             </div>
 
-            {/* Weight Management */}
             <button
               onClick={() => setShowWeightManager(!showWeightManager)}
               className="w-full bg-slate-700 hover:bg-slate-600 text-white py-3 px-4 rounded-lg"
@@ -1234,7 +1177,6 @@ export default function WorkoutTracker() {
               </div>
             )}
 
-            {/* Recent Workouts */}
             {recentWorkouts.length > 0 && (
               <div className="bg-slate-800 rounded-lg p-4">
                 <div className="flex justify-between items-center mb-3">
@@ -1290,7 +1232,6 @@ export default function WorkoutTracker() {
               </div>
             )}
 
-            {/* Cardio Dialog */}
             {showCardioDialog && (
               <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
                 <div className="bg-slate-800 rounded-lg p-6 w-full max-w-sm">
@@ -1347,7 +1288,6 @@ export default function WorkoutTracker() {
             )}
           </div>
         ) : (
-          /* Active Workout */
           <div className="space-y-4">
             <div className="bg-slate-800 rounded-lg p-4">
               <h2 className="text-xl font-bold mb-2">
@@ -1363,7 +1303,6 @@ export default function WorkoutTracker() {
               </div>
             </div>
 
-            {/* Recorded Sets */}
             {workoutSets.filter(set => set.logged).length > 0 && (
               <div className="bg-slate-800 rounded-lg p-4">
                 <h3 className="text-lg font-semibold mb-3">Recorded Sets</h3>
@@ -1408,7 +1347,6 @@ export default function WorkoutTracker() {
               </div>
             )}
 
-            {/* Exercise List - One row per exercise */}
             <div className="space-y-3">
               {exercises.map(exercise => {
                 const prescribedWeight = userWeights[exercise.id] || 0
@@ -1444,7 +1382,6 @@ export default function WorkoutTracker() {
               })}
             </div>
 
-            {/* Custom Set Dialog */}
             {showingCustomDialog && (
               <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
                 <div className="bg-slate-800 rounded-lg p-6 w-full max-w-sm">
@@ -1488,7 +1425,6 @@ export default function WorkoutTracker() {
               </div>
             )}
 
-            {/* Action Buttons */}
             <div className="flex gap-3">
               <button
                 onClick={exitWorkout}
@@ -1506,85 +1442,6 @@ export default function WorkoutTracker() {
           </div>
         )}
       </div>
-    </div>
-  )
-}
-
-// Set Logger Component
-function SetLogger({ set, onLog }) {
-  const [weight, setWeight] = useState(set.prescribed_weight)
-  const [reps, setReps] = useState(set.prescribed_reps)
-  const [showCustom, setShowCustom] = useState(false)
-
-  const getStatusColor = (status) => {
-    switch (status) {
-      case 'Complete': return 'bg-green-600'
-      case 'Exceeded': return 'bg-blue-600'
-      case 'Incomplete': return 'bg-red-600'
-      default: return 'bg-slate-600'
-    }
-  }
-
-  return (
-    <div className="bg-slate-800 rounded-lg p-4">
-      <div className="flex justify-between items-center mb-2">
-        <h4 className="font-semibold">{set.exercise_name}</h4>
-        <span className="text-sm text-slate-300">Set {set.set_number}</span>
-      </div>
-      
-      <div className="text-sm text-slate-300 mb-3">
-        Target: {set.prescribed_weight}kg × {set.prescribed_reps} reps
-      </div>
-
-      {set.logged ? (
-        <div className={`p-3 rounded ${getStatusColor(set.status)} text-center`}>
-          <div className="font-semibold">{set.status}</div>
-          <div className="text-sm">{set.actual_weight}kg × {set.actual_reps} reps</div>
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <div className="flex gap-2">
-            <button
-              onClick={() => onLog(set.prescribed_weight, set.prescribed_reps)}
-              className="flex-1 bg-blue-600 hover:bg-blue-700 py-2 px-4 rounded"
-            >
-              Log as Prescribed
-            </button>
-            <button
-              onClick={() => setShowCustom(!showCustom)}
-              className="flex-1 bg-slate-600 hover:bg-slate-500 py-2 px-4 rounded"
-            >
-              Custom
-            </button>
-          </div>
-
-          {showCustom && (
-            <div className="flex gap-2 items-center">
-              <input
-                type="number"
-                step="0.25"
-                value={weight}
-                onChange={(e) => setWeight(parseFloat(e.target.value) || 0)}
-                className="flex-1 bg-slate-700 text-white px-3 py-2 rounded"
-                placeholder="Weight (kg)"
-              />
-              <input
-                type="number"
-                value={reps}
-                onChange={(e) => setReps(parseInt(e.target.value) || 0)}
-                className="flex-1 bg-slate-700 text-white px-3 py-2 rounded"
-                placeholder="Reps"
-              />
-              <button
-                onClick={() => onLog(weight, reps)}
-                className="bg-green-600 hover:bg-green-700 py-2 px-4 rounded"
-              >
-                Log
-              </button>
-            </div>
-          )}
-        </div>
-      )}
     </div>
   )
 }
