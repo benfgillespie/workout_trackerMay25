@@ -30,9 +30,8 @@ export default function WorkoutTracker() {
   const [cardioIs4x4, setCardioIs4x4] = useState(false)
   const [recentCardio, setRecentCardio] = useState([])
   const [next4x4Date, setNext4x4Date] = useState(null)
-  const [zone2Minutes, setZone2Minutes] = useState(0)
   const [missed4x4Count, setMissed4x4Count] = useState(0)
-
+  const [zone2Minutes, setZone2Minutes] = useState(0)
 
   // Load initial data
   useEffect(() => {
@@ -224,8 +223,7 @@ export default function WorkoutTracker() {
       setCardioType('')
       setCardioDuration(0)
       setCardioIs4x4(false)
-      setShowCardioDialog(false)
-      setCardioDuration(0)
+      setShowCardioDialog(false)uration(0)
       setCardioIs4x4(false)
       setShowCardioDialog(false)
 
@@ -518,6 +516,17 @@ export default function WorkoutTracker() {
     const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
     
     return completedSets.length >= 2
+  }
+
+  const getWeeklyWorkoutCount = () => {
+    const today = new Date()
+    const startOfWeek = new Date(today)
+    startOfWeek.setDate(today.getDate() - today.getDay()) // Go to Sunday
+    
+    return recentWorkouts.filter(workout => {
+      const workoutDate = new Date(workout.workout_date)
+      return workoutDate >= startOfWeek
+    }).length
   }
 
   const deleteWorkout = async (workoutId) => {
@@ -1087,6 +1096,27 @@ export default function WorkoutTracker() {
               >
                 Start Today's Workout
               </button>
+
+              {/* Weekly Target Status */}
+              <div className="bg-slate-700 rounded-lg p-3 mb-4">
+                <div className="flex justify-between items-center">
+                  <span className="font-medium text-blue-400">Weekly Target</span>
+                  <span className="text-sm text-slate-300">
+                    {getWeeklyWorkoutCount()}/3 workouts
+                  </span>
+                </div>
+                <div className="w-full bg-slate-600 rounded-full h-2 mt-2">
+                  <div 
+                    className={`h-2 rounded-full transition-all duration-300 ${
+                      getWeeklyWorkoutCount() >= 3 ? 'bg-green-500' : 'bg-blue-500'
+                    }`}
+                    style={{ width: `${Math.min((getWeeklyWorkoutCount() / 3) * 100, 100)}%` }}
+                  ></div>
+                </div>
+                <div className="text-xs text-slate-400 mt-1">
+                  This calendar week {getWeeklyWorkoutCount() >= 3 ? '✅ Target achieved!' : `(${3 - getWeeklyWorkoutCount()} more needed)`}
+                </div>
+              </div>
 
               {/* Current Workout Preview */}
               <div className="bg-slate-700 rounded-lg p-3">
