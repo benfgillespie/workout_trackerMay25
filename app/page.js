@@ -118,78 +118,87 @@ export default function WorkoutTracker() {
   }
 
   const loadData = async () => {
-    if (!user) return
+  if (!user) return
+  
+  try {
+    console.log('=== LOADDATA DEBUG START ===')
+    console.log('User:', user.id)
     
-    try {
-      const { data: exercisesData } = await supabase
-        .from('exercises')
-        .select('*')
-        .order('name')
+    const { data: exercisesData, error: exercisesError } = await supabase
+      .from('exercises')
+      .select('*')
+      .order('name')
 
-      const { data: weightsData } = await supabase
-        .from('user_exercise_weights')
-        .select('exercise_id, prescribed_weight')
-        .eq('user_id', user.id)
+    console.log('Exercises query result:', { exercisesData, exercisesError })
 
-      const { data: lastSession } = await supabase
-        .from('workout_sessions')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
+    const { data: weightsData, error: weightsError } = await supabase
+      .from('user_exercise_weights')
+      .select('exercise_id, prescribed_weight')
+      .eq('user_id', user.id)
 
-      const { data: recentWorkoutsData } = await supabase
-        .from('workout_sessions')
-        .select(`
-          *,
-          workout_sets (
-            id,
-            exercise_id,
-            actual_weight,
-            actual_reps,
-            status,
-            exercises (name)
-          )
-        `)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-        .limit(3)
+    console.log('Weights query result:', { weightsData, weightsError })
 
-      setExercises(exercisesData || [])
-      
-      const weightsMap = {}
-      weightsData?.forEach(w => {
-        weightsMap[w.exercise_id] = w.prescribed_weight
-      })
-      setUserWeights(weightsMap)
+    const { data: lastSession } = await supabase
+      .from('workout_sessions')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(1)
 
-      if (lastSession && lastSession.length > 0) {
-        const last = lastSession[0]
-        let nextWeek = last.week_number
-        let nextDay = getNextDay(last.day_type)
-        let nextCycle = last.cycle_number
+    const { data: recentWorkoutsData } = await supabase
+      .from('workout_sessions')
+      .select(`
+        *,
+        workout_sets (
+          id,
+          exercise_id,
+          actual_weight,
+          actual_reps,
+          status,
+          exercises (name)
+        )
+      `)
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+      .limit(3)
 
-        if (nextDay === 'Light' && last.day_type === 'Heavy') {
-          nextWeek += 1
-          if (nextWeek > 5) {
-            nextWeek = 1
-            nextCycle += 1
-          }
+    setExercises(exercisesData || [])
+    
+    const weightsMap = {}
+    weightsData?.forEach(w => {
+      weightsMap[w.exercise_id] = w.prescribed_weight
+    })
+    setUserWeights(weightsMap)
+
+    if (lastSession && lastSession.length > 0) {
+      const last = lastSession[0]
+      let nextWeek = last.week_number
+      let nextDay = getNextDay(last.day_type)
+      let nextCycle = last.cycle_number
+
+      if (nextDay === 'Light' && last.day_type === 'Heavy') {
+        nextWeek += 1
+        if (nextWeek > 5) {
+          nextWeek = 1
+          nextCycle += 1
         }
-
-        setCurrentCycle({
-          week: nextWeek,
-          day: nextDay,
-          cycle: nextCycle
-        })
       }
 
-      setRecentWorkouts(recentWorkoutsData || [])
-      await loadCardioData()
-    } catch (error) {
-      console.error('Error loading data:', error)
+      setCurrentCycle({
+        week: nextWeek,
+        day: nextDay,
+        cycle: nextCycle
+      })
     }
+
+    setRecentWorkouts(recentWorkoutsData || [])
+    await loadCardioData()
+    
+    console.log('=== LOADDATA DEBUG END ===')
+  } catch (error) {
+    console.error('Error loading data:', error)
   }
+}
 
   const loadCardioData = async () => {
     if (!user) return
