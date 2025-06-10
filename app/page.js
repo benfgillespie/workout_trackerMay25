@@ -93,6 +93,13 @@ export default function WorkoutTracker() {
         }
       })
       console.log('OAuth response:', { data, error })
+      
+      // Force redirect if URL is provided
+      if (data?.url) {
+        console.log('Redirecting to:', data.url)
+        window.location.href = data.url
+      }
+      
       if (error) throw error
     } catch (error) {
       console.error('Error signing in with Google:', error)
