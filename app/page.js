@@ -4,11 +4,15 @@ import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 export default function WorkoutTracker() {
+  // Authentication state
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+  
+  // Existing state variables
   const [exercises, setExercises] = useState([])
   const [userWeights, setUserWeights] = useState({})
   const [currentWorkout, setCurrentWorkout] = useState(null)
   const [workoutSets, setWorkoutSets] = useState([])
-  const [loading, setLoading] = useState(true)
   const [showWeightManager, setShowWeightManager] = useState(false)
   const [currentCycle, setCurrentCycle] = useState({ week: 1, day: 'Light', cycle: 1 })
   const [recentWorkouts, setRecentWorkouts] = useState([])
@@ -34,10 +38,73 @@ export default function WorkoutTracker() {
   const [zone2Minutes, setZone2Minutes] = useState(0)
 
   useEffect(() => {
-    loadData()
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+    // Check initial auth state
+    checkUser()
+    
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        if (session?.user) {
+          setUser(session.user)
+          await loadData()
+        } else {
+          setUser(null)
+          // Clear all data when user logs out
+          setExercises([])
+          setUserWeights({})
+          setCurrentWorkout(null)
+          setWorkoutSets([])
+          setRecentWorkouts([])
+          setRecentCardio([])
+        }
+        setLoading(false)
+      }
+    )
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const checkUser = async () => {
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user) {
+        setUser(session.user)
+        await loadData()
+      }
+    } catch (error) {
+      console.error('Error checking user:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const signInWithGoogle = async () => {
+    try {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      })
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing in with Google:', error)
+      alert('Failed to sign in with Google')
+    }
+  }
+
+  const signOut = async () => {
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing out:', error)
+    }
+  }
 
   const loadData = async () => {
+    if (!user) return
+    
     try {
       const { data: exercisesData } = await supabase
         .from('exercises')
@@ -47,10 +114,12 @@ export default function WorkoutTracker() {
       const { data: weightsData } = await supabase
         .from('user_exercise_weights')
         .select('exercise_id, prescribed_weight')
+        .eq('user_id', user.id)
 
       const { data: lastSession } = await supabase
         .from('workout_sessions')
         .select('*')
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(1)
 
@@ -67,6 +136,7 @@ export default function WorkoutTracker() {
             exercises (name)
           )
         `)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
         .limit(3)
 
@@ -101,18 +171,19 @@ export default function WorkoutTracker() {
 
       setRecentWorkouts(recentWorkoutsData || [])
       await loadCardioData()
-      setLoading(false)
     } catch (error) {
       console.error('Error loading data:', error)
-      setLoading(false)
     }
   }
 
   const loadCardioData = async () => {
+    if (!user) return
+    
     try {
       const { data: cardioData } = await supabase
         .from('cardio_sessions')
         .select('*')
+        .eq('user_id', user.id)
         .order('workout_date', { ascending: false })
         .limit(5)
 
@@ -124,6 +195,7 @@ export default function WorkoutTracker() {
       const { data: last4x4 } = await supabase
         .from('cardio_sessions')
         .select('workout_date')
+        .eq('user_id', user.id)
         .eq('is_4x4', true)
         .order('workout_date', { ascending: false })
         .limit(1)
@@ -144,6 +216,7 @@ export default function WorkoutTracker() {
       const { data: recent4x4s } = await supabase
         .from('cardio_sessions')
         .select('workout_date')
+        .eq('user_id', user.id)
         .eq('is_4x4', true)
         .gte('workout_date', twelveWeeksAgo.toISOString().split('T')[0])
 
@@ -163,6 +236,7 @@ export default function WorkoutTracker() {
       const { data: recentCardioForZone2 } = await supabase
         .from('cardio_sessions')
         .select('duration_minutes, is_4x4')
+        .eq('user_id', user.id)
         .gte('workout_date', sevenDaysAgo.toISOString().split('T')[0])
 
       const totalZone2Minutes = recentCardioForZone2?.reduce((sum, session) => {
@@ -198,6 +272,7 @@ export default function WorkoutTracker() {
       await supabase
         .from('cardio_sessions')
         .insert({
+          user_id: user.id,
           workout_date: new Date().toISOString().split('T')[0],
           exercise_type: cardioType,
           duration_minutes: cardioDuration,
@@ -240,6 +315,7 @@ export default function WorkoutTracker() {
       const { data: session, error } = await supabase
         .from('workout_sessions')
         .insert({
+          user_id: user.id,
           workout_date: new Date().toISOString().split('T')[0],
           week_number: currentCycle.week,
           day_type: currentCycle.day,
@@ -306,6 +382,7 @@ export default function WorkoutTracker() {
         const { data: newSet } = await supabase
           .from('workout_sets')
           .insert({
+            user_id: user.id,
             session_id: set.session_id,
             exercise_id: set.exercise_id,
             prescribed_weight: set.prescribed_weight,
@@ -354,6 +431,7 @@ export default function WorkoutTracker() {
           .from('user_exercise_weights')
           .update({ prescribed_weight: newWeight, updated_at: new Date().toISOString() })
           .eq('exercise_id', exerciseId)
+          .eq('user_id', user.id)
 
         setUserWeights(prev => ({
           ...prev,
@@ -398,6 +476,7 @@ export default function WorkoutTracker() {
         .from('user_exercise_weights')
         .update({ prescribed_weight: newWeight })
         .eq('exercise_id', exerciseId)
+        .eq('user_id', user.id)
 
       setUserWeights(prev => ({
         ...prev,
@@ -423,6 +502,7 @@ export default function WorkoutTracker() {
             exercises (name)
           )
         `)
+        .eq('user_id', user.id)
         .order('created_at', { ascending: false })
       
       setAllWorkouts(allWorkoutsData || [])
@@ -441,6 +521,7 @@ export default function WorkoutTracker() {
           exercises (name)
         `)
         .eq('session_id', workout.id)
+        .eq('user_id', user.id)
         .order('exercise_id', { ascending: true })
         .order('set_number', { ascending: true })
       
@@ -490,9 +571,8 @@ export default function WorkoutTracker() {
   const getWeeklyWorkoutCount = () => {
     const today = new Date()
     const startOfWeek = new Date(today)
-    // Get Monday of current week (0=Sunday, 1=Monday, etc.)
     const dayOfWeek = today.getDay()
-    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1 // Sunday is 6 days from Monday
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
     startOfWeek.setDate(today.getDate() - daysFromMonday)
     
     return recentWorkouts.filter(workout => {
@@ -504,7 +584,7 @@ export default function WorkoutTracker() {
   const getEndOfWeekDate = () => {
     const today = new Date()
     const dayOfWeek = today.getDay()
-    const daysToSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek // Days until Sunday
+    const daysToSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek
     const endOfWeek = new Date(today)
     endOfWeek.setDate(today.getDate() + daysToSunday)
     return endOfWeek
@@ -520,11 +600,13 @@ export default function WorkoutTracker() {
         .from('workout_sets')
         .delete()
         .eq('session_id', workoutId)
+        .eq('user_id', user.id)
 
       await supabase
         .from('workout_sessions')
         .delete()
         .eq('id', workoutId)
+        .eq('user_id', user.id)
 
       loadData()
       if (showAllWorkouts) {
@@ -696,6 +778,7 @@ export default function WorkoutTracker() {
       const { data: newSet } = await supabase
         .from('workout_sets')
         .insert({
+          user_id: user.id,
           session_id: currentWorkout.id,
           exercise_id: exerciseId,
           prescribed_weight: weight,
@@ -754,6 +837,7 @@ export default function WorkoutTracker() {
       const { data: newSet } = await supabase
         .from('workout_sets')
         .insert({
+          user_id: user.id,
           session_id: currentWorkout.id,
           exercise_id: customExerciseId,
           prescribed_weight: prescribedWeight,
@@ -833,12 +917,65 @@ export default function WorkoutTracker() {
     )
   }
 
+  // Show login screen if not authenticated
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="bg-slate-800 rounded-lg p-8 max-w-md w-full mx-4">
+          <h1 className="text-3xl font-bold text-white text-center mb-2">
+            Workout Tracker
+          </h1>
+          <p className="text-slate-300 text-center mb-8">
+            Track your strength training and cardio workouts
+          </p>
+          
+          <button
+            onClick={signInWithGoogle}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center gap-3"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/>
+              <path fill="currentColor" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/>
+              <path fill="currentColor" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+            </svg>
+            Sign in with Google
+          </button>
+          
+          <p className="text-slate-400 text-sm text-center mt-6">
+            Your workout data will be securely stored and only accessible to you.
+          </p>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       <div className="bg-slate-800 p-4 shadow-lg">
-        <h1 className="text-2xl font-bold text-center">Workout Tracker</h1>
-        <div className="text-center text-slate-300 mt-2">
-          Week {currentCycle.week} • {currentCycle.day} Day • Cycle {currentCycle.cycle}
+        <div className="flex items-center justify-between">
+          <div className="text-center flex-1">
+            <h1 className="text-2xl font-bold">Workout Tracker</h1>
+            <div className="text-slate-300 mt-2">
+              Week {currentCycle.week} • {currentCycle.day} Day • Cycle {currentCycle.cycle}
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <div className="text-sm text-slate-300">
+                {user.user_metadata?.full_name || user.email}
+              </div>
+              <div className="text-xs text-slate-400">
+                {user.email}
+              </div>
+            </div>
+            <button
+              onClick={signOut}
+              className="bg-slate-700 hover:bg-slate-600 text-white px-3 py-2 rounded text-sm"
+            >
+              Sign Out
+            </button>
+          </div>
         </div>
       </div>
 
@@ -871,10 +1008,6 @@ export default function WorkoutTracker() {
               </div>
             </div>
 
-            <div className="bg-slate-800 rounded-lg p-4">
-              <div className="text-lg font-semibold">
-                Week {selectedWorkout.week_number} • {selectedWorkout.day_type} Day
-              </div>
             <div className="bg-slate-800 rounded-lg p-4">
               <div className="text-lg font-semibold">
                 Week {selectedWorkout.week_number} • {selectedWorkout.day_type} Day
@@ -1312,35 +1445,79 @@ export default function WorkoutTracker() {
                     .sort((a, b) => a.exercise_name.localeCompare(b.exercise_name))
                     .map((set, index) => (
                     <div key={set.set_id || index} className="flex items-center justify-between bg-slate-700 rounded p-3">
-                      <div className="flex items-center gap-3">
-                        <span className="font-medium">{set.exercise_name}</span>
-                        <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
-                        <span className={`px-2 py-1 rounded text-xs ${
-                          set.status === 'Complete' ? 'bg-green-600' :
-                          set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
-                        }`}>
-                          {set.status}
-                        </span>
-                        {isLevelUpEligible(set.exercise_id) && (
-                          <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
-                            🎉 Level Up!
-                          </span>
-                        )}
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => editRecordedSet(set, index)}
-                          className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
-                        >
-                          Edit
-                        </button>
-                        <button
-                          onClick={() => deleteRecordedSet(index)}
-                          className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
-                        >
-                          Delete
-                        </button>
-                      </div>
+                      {editingSet === index ? (
+                        <div className="flex items-center gap-2 flex-1">
+                          <span className="font-medium">{set.exercise_name}</span>
+                          <input
+                            type="number"
+                            step="0.25"
+                            value={editWeight}
+                            onChange={(e) => setEditWeight(parseFloat(e.target.value) || 0)}
+                            className="w-20 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                          />
+                          <span className="text-slate-400">×</span>
+                          <input
+                            type="number"
+                            value={editReps}
+                            onChange={(e) => setEditReps(parseInt(e.target.value) || 0)}
+                            className="w-16 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                          />
+                          <button
+                            onClick={() => {
+                              const updatedSets = [...workoutSets]
+                              updatedSets[index] = {
+                                ...set,
+                                actual_weight: editWeight,
+                                actual_reps: editReps
+                              }
+                              setWorkoutSets(updatedSets)
+                              logSet(index, editWeight, editReps)
+                              setEditingSet(null)
+                            }}
+                            className="bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingSet(null)}
+                            className="bg-slate-500 hover:bg-slate-400 px-2 py-1 rounded text-xs"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium">{set.exercise_name}</span>
+                            <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
+                            <span className={`px-2 py-1 rounded text-xs ${
+                              set.status === 'Complete' ? 'bg-green-600' :
+                              set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
+                            }`}>
+                              {set.status}
+                            </span>
+                            {isLevelUpEligible(set.exercise_id) && (
+                              <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
+                                🎉 Level Up!
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => editRecordedSet(set, index)}
+                              className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteRecordedSet(index)}
+                              className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </div>
                   ))}
                 </div>
