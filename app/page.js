@@ -869,7 +869,113 @@ export default function WorkoutTracker() {
       let status = 'Incomplete'
       if (customReps >= getRepsForWeek(currentCycle.week) && customWeight >= prescribedWeight) {
         status = customReps > getRepsForWeek(currentCycle.week) || customWeight > prescribedWeight ? 'Exceeded' : 'Complete'
-      }'use client'
+      }
+
+      const { data: newSet } = await supabase
+        .from('workout_sets')
+        .insert({
+          user_id: user.id,
+          session_id: currentWorkout.id,
+          exercise_id: customExerciseId,
+          prescribed_weight: prescribedWeight,
+          actual_weight: customWeight,
+          prescribed_reps: getRepsForWeek(currentCycle.week),
+          actual_reps: customReps,
+          set_number: nextSetNumber,
+          status: status
+        })
+        .select()
+        .single()
+
+      const newWorkoutSet = {
+        exercise_id: customExerciseId,
+        exercise_name: exercise.name,
+        prescribed_weight: prescribedWeight,
+        prescribed_reps: getRepsForWeek(currentCycle.week),
+        actual_weight: customWeight,
+        actual_reps: customReps,
+        set_number: nextSetNumber,
+        status: status,
+        session_id: currentWorkout.id,
+        logged: true,
+        set_id: newSet.id
+      }
+
+      setWorkoutSets(prev => [...prev, newWorkoutSet])
+      setShowingCustomDialog(false)
+
+      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
+        checkForLevelUp(customExerciseId, [...workoutSets, newWorkoutSet])
+      }
+
+    } catch (error) {
+      console.error('Error adding custom set:', error)
+    }
+  }
+
+  const getNextSetNumber = (exerciseId) => {
+    const exerciseSets = workoutSets.filter(s => s.exercise_id === exerciseId && s.logged)
+    return exerciseSets.length + 1
+  }
+
+  const editRecordedSet = (set, index) => {
+    setEditingSet(index)
+    setEditWeight(set.actual_weight)
+    setEditReps(set.actual_reps)
+  }
+
+  const deleteRecordedSet = async (index) => {
+    if (!confirm('Are you sure you want to delete this set?')) {
+      return
+    }
+
+    const set = workoutSets[index]
+    
+    try {
+      if (set.set_id) {
+        await supabase
+          .from('workout_sets')
+          .delete()
+          .eq('id', set.set_id)
+      }
+
+      setWorkoutSets(prev => prev.filter((_, i) => i !== index))
+
+    } catch (error) {
+      console.error('Error deleting recorded set:', error)
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="text-white text-xl">Loading...</div>
+      </div>
+    )
+  }
+
+  // Add debug logging here
+  console.log('=== AUTH STATE DEBUG ===', { user: user?.id, loading })
+
+  // Show login screen if not authenticated
+  if (!user) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex items-center justify-center">
+        <div className="bg-slate-800 rounded-lg p-8 max-w-md w-full mx-4">
+          <h1 className="text-3xl font-bold text-white text-center mb-2">
+            Workout Tracker
+          </h1>
+          <p className="text-slate-300 text-center mb-8">
+            Track your strength training and cardio workouts
+          </p>
+          
+          <button
+            onClick={signInWithGoogle}
+            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-6 rounded-lg flex items-center justify-center gap-3"
+          >
+            <svg className="w-5 h-5" viewBox="0 0 24 24">
+              <path fill="currentColor" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
+              <path fill="currentColor" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18'use client'
 
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
