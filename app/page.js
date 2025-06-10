@@ -79,18 +79,26 @@ export default function WorkoutTracker() {
   }
 
   const signInWithGoogle = async () => {
+    console.log('=== SIGN IN DEBUG START ===')
+    console.log('Button clicked!')
+    console.log('Window location:', window.location.origin)
+    console.log('Supabase client:', supabase)
+    
     try {
-      const { error } = await supabase.auth.signInWithOAuth({
+      console.log('Attempting OAuth...')
+      const { data, error } = await supabase.auth.signInWithOAuth({
         provider: 'google',
         options: {
           redirectTo: window.location.origin
         }
       })
+      console.log('OAuth response:', { data, error })
       if (error) throw error
     } catch (error) {
       console.error('Error signing in with Google:', error)
-      alert('Failed to sign in with Google')
+      alert('Failed to sign in with Google: ' + error.message)
     }
+    console.log('=== SIGN IN DEBUG END ===')
   }
 
   const signOut = async () => {
