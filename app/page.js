@@ -1310,6 +1310,7 @@ export default function WorkoutTracker() {
             {showWeightManager && (
               <div className="bg-slate-800 rounded-lg p-4 space-y-3">
                 <h3 className="text-lg font-semibold">Prescribed Weights (kg)</h3>
+                {console.log('Debug - exercises:', exercises, 'userWeights:', userWeights)}
                 {exercises.map(exercise => (
                   <div key={exercise.id} className="flex items-center justify-between">
                     <label className="flex-1">{exercise.name}</label>
