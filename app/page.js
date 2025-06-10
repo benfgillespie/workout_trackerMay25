@@ -38,6 +38,877 @@ export default function WorkoutTracker() {
   const [zone2Minutes, setZone2Minutes] = useState(0)
 
   useEffect(() => {
+    console.log('=== USEEFFECT TRIGGERED ===')
+    // Check initial auth state
+    checkUser()
+    
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, session) => {
+        console.log('=== AUTH STATE CHANGE ===', { event, user: session?.user?.id })
+        if (session?.user) {
+          setUser(session.user)
+          await loadData(session.user)
+        } else {
+          setUser(null)
+          // Clear all data when user logs out
+          setExercises([])
+          setUserWeights({})
+          setCurrentWorkout(null)
+          setWorkoutSets([])
+          setRecentWorkouts([])
+          setRecentCardio([])
+        }
+        setLoading(false)
+      }
+    )
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  const checkUser = async () => {
+    console.log('=== CHECKUSER CALLED ===')
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      console.log('=== SESSION CHECK ===', { user: session?.user?.id })
+      if (session?.user) {
+        setUser(session.user)
+        await loadData(session.user)
+      }
+    } catch (error) {
+      console.error('Error checking user:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const signInWithGoogle = async () => {
+    console.log('=== SIGN IN DEBUG START ===')
+    console.log('Button clicked!')
+    console.log('Window location:', window.location.origin)
+    console.log('Supabase client:', supabase)
+    
+    try {
+      console.log('Attempting OAuth...')
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      })
+      console.log('OAuth response:', { data, error })
+      
+      // Force redirect if URL is provided
+      if (data?.url) {
+        console.log('Redirecting to:', data.url)
+        window.location.href = data.url
+      }
+      
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing in with Google:', error)
+      alert('Failed to sign in with Google: ' + error.message)
+    }
+    console.log('=== SIGN IN DEBUG END ===')
+  }
+
+  const signOut = async () => {
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing out:', error)
+    }
+  }
+
+  const loadData = async (currentUser = user) => {
+    console.log('=== LOADDATA CALLED ===', { user: currentUser?.id })
+    if (!currentUser) {
+      console.log('=== LOADDATA ABORTED - NO USER ===')
+      return
+    }
+    
+    try {
+      console.log('=== LOADDATA DEBUG START ===')
+      console.log('User:', currentUser.id)
+      
+      const { data: exercisesData, error: exercisesError } = await supabase
+        .from('exercises')
+        .select('*')
+        .order('name')
+
+      console.log('Exercises query result:', { exercisesData, exercisesError })
+
+      const { data: weightsData, error: weightsError } = await supabase
+        .from('user_exercise_weights')
+        .select('exercise_id, prescribed_weight')
+        .eq('user_id', currentUser.id)
+
+      console.log('Weights query result:', { weightsData, weightsError })
+
+      const { data: lastSession } = await supabase
+        .from('workout_sessions')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      const { data: recentWorkoutsData } = await supabase
+        .from('workout_sessions')
+        .select(`
+          *,
+          workout_sets (
+            id,
+            exercise_id,
+            actual_weight,
+            actual_reps,
+            status,
+            exercises (name)
+          )
+        `)
+        .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(3)
+
+      setExercises(exercisesData || [])
+      
+      const weightsMap = {}
+      weightsData?.forEach(w => {
+        weightsMap[w.exercise_id] = w.prescribed_weight
+      })
+      setUserWeights(weightsMap)
+
+      console.log('=== SETTING STATE ===', { 
+        exercises: exercisesData?.length, 
+        weights: Object.keys(weightsMap).length 
+      })
+
+      if (lastSession && lastSession.length > 0) {
+        const last = lastSession[0]
+        let nextWeek = last.week_number
+        let nextDay = getNextDay(last.day_type)
+        let nextCycle = last.cycle_number
+
+        if (nextDay === 'Light' && last.day_type === 'Heavy') {
+          nextWeek += 1
+          if (nextWeek > 5) {
+            nextWeek = 1
+            nextCycle += 1
+          }
+        }
+
+        setCurrentCycle({
+          week: nextWeek,
+          day: nextDay,
+          cycle: nextCycle
+        })
+      }
+
+      setRecentWorkouts(recentWorkoutsData || [])
+      await loadCardioData()
+      
+      console.log('=== LOADDATA DEBUG END ===')
+    } catch (error) {
+      console.error('Error loading data:', error)
+    }
+  }
+
+  const loadCardioData = async () => {
+    if (!user) return
+    
+    try {
+      const { data: cardioData } = await supabase
+        .from('cardio_sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('workout_date', { ascending: false })
+        .limit(5)
+
+      setRecentCardio(cardioData || [])
+
+      const today = new Date()
+      const currentSunday = getNextSunday(today)
+      
+      const { data: last4x4 } = await supabase
+        .from('cardio_sessions')
+        .select('workout_date')
+        .eq('user_id', user.id)
+        .eq('is_4x4', true)
+        .order('workout_date', { ascending: false })
+        .limit(1)
+
+      let nextDueDate = currentSunday
+      if (last4x4 && last4x4.length > 0) {
+        const lastDate = new Date(last4x4[0].workout_date)
+        const lastSunday = getNextSunday(lastDate)
+        nextDueDate = new Date(lastSunday)
+        nextDueDate.setDate(nextDueDate.getDate() + 7)
+      }
+
+      setNext4x4Date(nextDueDate)
+
+      const twelveWeeksAgo = new Date()
+      twelveWeeksAgo.setDate(twelveWeeksAgo.getDate() - (12 * 7))
+      
+      const { data: recent4x4s } = await supabase
+        .from('cardio_sessions')
+        .select('workout_date')
+        .eq('user_id', user.id)
+        .eq('is_4x4', true)
+        .gte('workout_date', twelveWeeksAgo.toISOString().split('T')[0])
+
+      const completedWeeks = new Set()
+      recent4x4s?.forEach(session => {
+        const date = new Date(session.workout_date)
+        const weekStart = getWeekStart(date)
+        completedWeeks.add(weekStart.toISOString().split('T')[0])
+      })
+
+      const missedCount = 12 - completedWeeks.size
+      setMissed4x4Count(Math.max(0, missedCount))
+
+      const sevenDaysAgo = new Date()
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+      
+      const { data: recentCardioForZone2 } = await supabase
+        .from('cardio_sessions')
+        .select('duration_minutes, is_4x4')
+        .eq('user_id', user.id)
+        .gte('workout_date', sevenDaysAgo.toISOString().split('T')[0])
+
+      const totalZone2Minutes = recentCardioForZone2?.reduce((sum, session) => {
+        return session.is_4x4 ? sum : sum + session.duration_minutes
+      }, 0) || 0
+      
+      setZone2Minutes(totalZone2Minutes)
+
+    } catch (error) {
+      console.error('Error loading cardio data:', error)
+    }
+  }
+
+  const getNextSunday = (date) => {
+    const result = new Date(date)
+    result.setDate(result.getDate() + (7 - result.getDay()) % 7)
+    return result
+  }
+
+  const getWeekStart = (date) => {
+    const result = new Date(date)
+    result.setDate(result.getDate() - result.getDay())
+    return result
+  }
+
+  const addCardioWorkout = async () => {
+    if (!cardioType.trim() || cardioDuration <= 0) {
+      alert('Please enter exercise type and duration')
+      return
+    }
+
+    try {
+      await supabase
+        .from('cardio_sessions')
+        .insert({
+          user_id: user.id,
+          workout_date: new Date().toISOString().split('T')[0],
+          exercise_type: cardioType,
+          duration_minutes: cardioDuration,
+          is_4x4: cardioIs4x4
+        })
+
+      setCardioType('')
+      setCardioDuration(0)
+      setCardioIs4x4(false)
+      setShowCardioDialog(false)
+
+      loadCardioData()
+
+      const message = `Cardio workout logged: ${cardioType} for ${cardioDuration} minutes${cardioIs4x4 ? ' (Norwegian 4x4)' : ''}`
+      alert(message)
+
+    } catch (error) {
+      console.error('Error adding cardio workout:', error)
+      alert('Failed to log cardio workout')
+    }
+  }
+
+  const getNextDay = (currentDay) => {
+    const dayOrder = ['Light', 'Medium', 'Heavy']
+    const currentIndex = dayOrder.indexOf(currentDay)
+    return dayOrder[(currentIndex + 1) % dayOrder.length]
+  }
+
+  const calculateWorkoutWeight = (prescribedWeight, dayType) => {
+    const multipliers = { Light: 0.8, Medium: 0.9, Heavy: 1.0 }
+    return Math.round(prescribedWeight * multipliers[dayType] * 4) / 4
+  }
+
+  const getRepsForWeek = (week) => {
+    return 6 + week + 1
+  }
+
+  const startWorkout = async () => {
+    try {
+      const { data: session, error } = await supabase
+        .from('workout_sessions')
+        .insert({
+          user_id: user.id,
+          workout_date: new Date().toISOString().split('T')[0],
+          week_number: currentCycle.week,
+          day_type: currentCycle.day,
+          cycle_number: currentCycle.cycle
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setCurrentWorkout(session)
+      setIsEditingCompletedWorkout(false)
+
+      const sets = []
+      exercises.forEach(exercise => {
+        const prescribedWeight = userWeights[exercise.id] || 0
+        const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
+        const reps = getRepsForWeek(currentCycle.week)
+
+        for (let i = 1; i <= 2; i++) {
+          sets.push({
+            exercise_id: exercise.id,
+            exercise_name: exercise.name,
+            prescribed_weight: workoutWeight,
+            prescribed_reps: reps,
+            set_number: i,
+            status: 'Incomplete',
+            session_id: session.id
+          })
+        }
+      })
+
+      setWorkoutSets(sets)
+    } catch (error) {
+      console.error('Error starting workout:', error)
+    }
+  }
+
+  const logSet = async (setIndex, actualWeight, actualReps) => {
+    const set = workoutSets[setIndex]
+    let status = 'Incomplete'
+
+    if (actualReps >= set.prescribed_reps && actualWeight >= set.prescribed_weight) {
+      status = actualReps > set.prescribed_reps || actualWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
+    }
+
+    try {
+      let setId
+      
+      if (set.set_id) {
+        await supabase
+          .from('workout_sets')
+          .update({
+            prescribed_weight: set.prescribed_weight,
+            actual_weight: actualWeight,
+            prescribed_reps: set.prescribed_reps,
+            actual_reps: actualReps,
+            status: status
+          })
+          .eq('id', set.set_id)
+        
+        setId = set.set_id
+      } else {
+        const { data: newSet } = await supabase
+          .from('workout_sets')
+          .insert({
+            user_id: user.id,
+            session_id: set.session_id,
+            exercise_id: set.exercise_id,
+            prescribed_weight: set.prescribed_weight,
+            actual_weight: actualWeight,
+            prescribed_reps: set.prescribed_reps,
+            actual_reps: actualReps,
+            set_number: set.set_number,
+            status: status
+          })
+          .select()
+          .single()
+        
+        setId = newSet.id
+      }
+
+      const updatedSets = [...workoutSets]
+      updatedSets[setIndex] = {
+        ...set,
+        actual_weight: actualWeight,
+        actual_reps: actualReps,
+        status: status,
+        logged: true,
+        set_id: setId
+      }
+      setWorkoutSets(updatedSets)
+
+      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
+        checkForLevelUp(set.exercise_id, updatedSets)
+      }
+
+    } catch (error) {
+      console.error('Error logging set:', error)
+    }
+  }
+
+  const checkForLevelUp = async (exerciseId, sets) => {
+    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
+    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+
+    if (completedSets.length >= 2) {
+      const currentWeight = userWeights[exerciseId]
+      const newWeight = Math.round(currentWeight * 1.1 * 4) / 4
+
+      try {
+        await supabase
+          .from('user_exercise_weights')
+          .update({ prescribed_weight: newWeight, updated_at: new Date().toISOString() })
+          .eq('exercise_id', exerciseId)
+          .eq('user_id', user.id)
+
+        setUserWeights(prev => ({
+          ...prev,
+          [exerciseId]: newWeight
+        }))
+
+        const exerciseName = exercises.find(e => e.id === exerciseId)?.name
+        alert(`🎉 LEVEL UP! ${exerciseName} increased to ${newWeight}kg`)
+      } catch (error) {
+        console.error('Error updating weight:', error)
+      }
+    }
+  }
+
+  const finishWorkout = () => {
+    setCurrentWorkout(null)
+    setWorkoutSets([])
+    setIsEditingCompletedWorkout(false)
+    loadData()
+  }
+
+  const exitWorkout = () => {
+    if (isEditingCompletedWorkout) {
+      if (confirm('Discard changes and return to workout history?')) {
+        setCurrentWorkout(null)
+        setWorkoutSets([])
+        setIsEditingCompletedWorkout(false)
+        loadData()
+      }
+    } else {
+      if (confirm('Are you sure you want to exit this workout? Your progress will be saved but the workout will remain incomplete.')) {
+        setCurrentWorkout(null)
+        setWorkoutSets([])
+        setIsEditingCompletedWorkout(false)
+      }
+    }
+  }
+
+  const updateWeight = async (exerciseId, newWeight) => {
+    try {
+      await supabase
+        .from('user_exercise_weights')
+        .update({ prescribed_weight: newWeight })
+        .eq('exercise_id', exerciseId)
+        .eq('user_id', user.id)
+
+      setUserWeights(prev => ({
+        ...prev,
+        [exerciseId]: newWeight
+      }))
+    } catch (error) {
+      console.error('Error updating weight:', error)
+    }
+  }
+
+  const loadAllWorkouts = async () => {
+    try {
+      const { data: allWorkoutsData } = await supabase
+        .from('workout_sessions')
+        .select(`
+          *,
+          workout_sets (
+            id,
+            exercise_id,
+            actual_weight,
+            actual_reps,
+            status,
+            exercises (name)
+          )
+        `)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+      
+      setAllWorkouts(allWorkoutsData || [])
+      setShowAllWorkouts(true)
+    } catch (error) {
+      console.error('Error loading all workouts:', error)
+    }
+  }
+
+  const loadWorkoutDetails = async (workout) => {
+    try {
+      const { data: setsData } = await supabase
+        .from('workout_sets')
+        .select(`
+          *,
+          exercises (name)
+        `)
+        .eq('session_id', workout.id)
+        .eq('user_id', user.id)
+        .order('exercise_id', { ascending: true })
+        .order('set_number', { ascending: true })
+      
+      setWorkoutDetails(setsData || [])
+      setSelectedWorkout(workout)
+    } catch (error) {
+      console.error('Error loading workout details:', error)
+    }
+  }
+
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    })
+  }
+
+  const formatDateString = (dateString) => {
+    return new Date(dateString).toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    })
+  }
+
+  const getWorkoutSummary = (workout) => {
+    if (!workout.workout_sets) return 'No sets logged'
+    
+    const completedSets = workout.workout_sets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+    const totalSets = workout.workout_sets.length
+    
+    return `${completedSets.length}/${totalSets} sets completed`
+  }
+
+  const isLevelUpEligible = (exerciseId, sets = workoutSets) => {
+    if (currentCycle.week !== 5 || currentCycle.day !== 'Heavy') {
+      return false
+    }
+    
+    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
+    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+    
+    return completedSets.length >= 2
+  }
+
+  const getWeeklyWorkoutCount = () => {
+    const today = new Date()
+    const startOfWeek = new Date(today)
+    const dayOfWeek = today.getDay()
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+    startOfWeek.setDate(today.getDate() - daysFromMonday)
+    
+    return recentWorkouts.filter(workout => {
+      const workoutDate = new Date(workout.workout_date)
+      return workoutDate >= startOfWeek
+    }).length
+  }
+
+  const getEndOfWeekDate = () => {
+    const today = new Date()
+    const dayOfWeek = today.getDay()
+    const daysToSunday = dayOfWeek === 0 ? 0 : 7 - dayOfWeek
+    const endOfWeek = new Date(today)
+    endOfWeek.setDate(today.getDate() + daysToSunday)
+    return endOfWeek
+  }
+
+  const deleteWorkout = async (workoutId) => {
+    if (!confirm('Are you sure you want to delete this workout? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      await supabase
+        .from('workout_sets')
+        .delete()
+        .eq('session_id', workoutId)
+        .eq('user_id', user.id)
+
+      await supabase
+        .from('workout_sessions')
+        .delete()
+        .eq('id', workoutId)
+        .eq('user_id', user.id)
+
+      loadData()
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+      
+      if (selectedWorkout?.id === workoutId) {
+        setSelectedWorkout(null)
+      }
+
+      alert('Workout deleted successfully!')
+    } catch (error) {
+      console.error('Error deleting workout:', error)
+      alert('Failed to delete workout. Please try again.')
+    }
+  }
+
+  const startEditSet = (set) => {
+    setEditingSet(set.id)
+    setEditWeight(set.actual_weight)
+    setEditReps(set.actual_reps)
+  }
+
+  const saveEditSet = async (setId) => {
+    try {
+      const set = workoutDetails.find(s => s.id === setId)
+      let newStatus = 'Incomplete'
+      
+      if (editReps >= set.prescribed_reps && editWeight >= set.prescribed_weight) {
+        newStatus = editReps > set.prescribed_reps || editWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
+      }
+
+      await supabase
+        .from('workout_sets')
+        .update({
+          actual_weight: editWeight,
+          actual_reps: editReps,
+          status: newStatus
+        })
+        .eq('id', setId)
+
+      setWorkoutDetails(prev => prev.map(s => 
+        s.id === setId 
+          ? { ...s, actual_weight: editWeight, actual_reps: editReps, status: newStatus }
+          : s
+      ))
+
+      setEditingSet(null)
+      loadData()
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+
+    } catch (error) {
+      console.error('Error updating set:', error)
+      alert('Failed to update set. Please try again.')
+    }
+  }
+
+  const cancelEditSet = () => {
+    setEditingSet(null)
+    setEditWeight(0)
+    setEditReps(0)
+  }
+
+  const deleteSet = async (setId) => {
+    if (!confirm('Are you sure you want to delete this set?')) {
+      return
+    }
+
+    try {
+      await supabase
+        .from('workout_sets')
+        .delete()
+        .eq('id', setId)
+
+      setWorkoutDetails(prev => prev.filter(s => s.id !== setId))
+      loadData()
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+
+    } catch (error) {
+      console.error('Error deleting set:', error)
+      alert('Failed to delete set. Please try again.')
+    }
+  }
+
+  const editWorkout = async (workout) => {
+    try {
+      setCurrentWorkout(workout)
+      setIsEditingCompletedWorkout(true)
+      
+      const { data: existingSets } = await supabase
+        .from('workout_sets')
+        .select(`
+          *,
+          exercises (name)
+        `)
+        .eq('session_id', workout.id)
+        .order('exercise_id')
+        .order('set_number')
+
+      const convertedSets = existingSets.map(set => ({
+        exercise_id: set.exercise_id,
+        exercise_name: set.exercises.name,
+        prescribed_weight: set.prescribed_weight,
+        prescribed_reps: set.prescribed_reps,
+        set_number: set.set_number,
+        status: set.status,
+        session_id: set.session_id,
+        actual_weight: set.actual_weight,
+        actual_reps: set.actual_reps,
+        logged: true,
+        set_id: set.id
+      }))
+
+      const existingExerciseIds = new Set(existingSets.map(s => s.exercise_id))
+      const reps = getRepsForWeek(workout.week_number)
+      
+      exercises.forEach(exercise => {
+        if (!existingExerciseIds.has(exercise.id)) {
+          const prescribedWeight = userWeights[exercise.id] || 0
+          const workoutWeight = calculateWorkoutWeight(prescribedWeight, workout.day_type)
+          
+          for (let i = 1; i <= 2; i++) {
+            convertedSets.push({
+              exercise_id: exercise.id,
+              exercise_name: exercise.name,
+              prescribed_weight: workoutWeight,
+              prescribed_reps: reps,
+              set_number: i,
+              status: 'Incomplete',
+              session_id: workout.id,
+              logged: false
+            })
+          }
+        }
+      })
+
+      convertedSets.sort((a, b) => {
+        if (a.exercise_name !== b.exercise_name) {
+          return a.exercise_name.localeCompare(b.exercise_name)
+        }
+        return a.set_number - b.set_number
+      })
+
+      setWorkoutSets(convertedSets)
+      
+      setCurrentCycle({
+        week: workout.week_number,
+        day: workout.day_type,
+        cycle: workout.cycle_number
+      })
+
+      setSelectedWorkout(null)
+      
+    } catch (error) {
+      console.error('Error editing workout:', error)
+      alert('Failed to load workout for editing. Please try again.')
+    }
+  }
+
+  const addPrescribedSet = async (exerciseId, weight, reps) => {
+    try {
+      const exercise = exercises.find(e => e.id === exerciseId)
+      const nextSetNumber = getNextSetNumber(exerciseId)
+      
+      const { data: newSet } = await supabase
+        .from('workout_sets')
+        .insert({
+          user_id: user.id,
+          session_id: currentWorkout.id,
+          exercise_id: exerciseId,
+          prescribed_weight: weight,
+          actual_weight: weight,
+          prescribed_reps: reps,
+          actual_reps: reps,
+          set_number: nextSetNumber,
+          status: 'Complete'
+        })
+        .select()
+        .single()
+
+      const newWorkoutSet = {
+        exercise_id: exerciseId,
+        exercise_name: exercise.name,
+        prescribed_weight: weight,
+        prescribed_reps: reps,
+        actual_weight: weight,
+        actual_reps: reps,
+        set_number: nextSetNumber,
+        status: 'Complete',
+        session_id: currentWorkout.id,
+        logged: true,
+        set_id: newSet.id
+      }
+
+      setWorkoutSets(prev => [...prev, newWorkoutSet])
+
+      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
+        checkForLevelUp(exerciseId, [...workoutSets, newWorkoutSet])
+      }
+
+    } catch (error) {
+      console.error('Error adding prescribed set:', error)
+    }
+  }
+
+  const showCustomSetDialog = (exerciseId, defaultWeight, defaultReps) => {
+    setCustomExerciseId(exerciseId)
+    setCustomWeight(defaultWeight)
+    setCustomReps(defaultReps)
+    setShowingCustomDialog(true)
+  }
+
+  const addCustomSet = async () => {
+    try {
+      const exercise = exercises.find(e => e.id === customExerciseId)
+      const nextSetNumber = getNextSetNumber(customExerciseId)
+      const prescribedWeight = calculateWorkoutWeight(userWeights[customExerciseId] || 0, currentCycle.day)
+      
+      let status = 'Incomplete'
+      if (customReps >= getRepsForWeek(currentCycle.week) && customWeight >= prescribedWeight) {
+        status = customReps > getRepsForWeek(currentCycle.week) || customWeight > prescribedWeight ? 'Exceeded' : 'Complete'
+      }'use client'
+
+import { useState, useEffect } from 'react'
+import { supabase } from '../lib/supabase'
+
+export default function WorkoutTracker() {
+  // Authentication state
+  const [user, setUser] = useState(null)
+  const [loading, setLoading] = useState(true)
+  
+  // Existing state variables
+  const [exercises, setExercises] = useState([])
+  const [userWeights, setUserWeights] = useState({})
+  const [currentWorkout, setCurrentWorkout] = useState(null)
+  const [workoutSets, setWorkoutSets] = useState([])
+  const [showWeightManager, setShowWeightManager] = useState(false)
+  const [currentCycle, setCurrentCycle] = useState({ week: 1, day: 'Light', cycle: 1 })
+  const [recentWorkouts, setRecentWorkouts] = useState([])
+  const [showAllWorkouts, setShowAllWorkouts] = useState(false)
+  const [allWorkouts, setAllWorkouts] = useState([])
+  const [selectedWorkout, setSelectedWorkout] = useState(null)
+  const [workoutDetails, setWorkoutDetails] = useState([])
+  const [editingSet, setEditingSet] = useState(null)
+  const [editWeight, setEditWeight] = useState(0)
+  const [editReps, setEditReps] = useState(0)
+  const [showingCustomDialog, setShowingCustomDialog] = useState(false)
+  const [customExerciseId, setCustomExerciseId] = useState(null)
+  const [customWeight, setCustomWeight] = useState(0)
+  const [customReps, setCustomReps] = useState(0)
+  const [isEditingCompletedWorkout, setIsEditingCompletedWorkout] = useState(false)
+  const [showCardioDialog, setShowCardioDialog] = useState(false)
+  const [cardioType, setCardioType] = useState('')
+  const [cardioDuration, setCardioDuration] = useState(0)
+  const [cardioIs4x4, setCardioIs4x4] = useState(false)
+  const [recentCardio, setRecentCardio] = useState([])
+  const [next4x4Date, setNext4x4Date] = useState(null)
+  const [missed4x4Count, setMissed4x4Count] = useState(0)
+  const [zone2Minutes, setZone2Minutes] = useState(0)
+
+  useEffect(() => {
     // Check initial auth state
     checkUser()
     
@@ -118,87 +989,78 @@ export default function WorkoutTracker() {
   }
 
   const loadData = async () => {
-  if (!user) return
-  
-  try {
-    console.log('=== LOADDATA DEBUG START ===')
-    console.log('User:', user.id)
+    if (!user) return
     
-    const { data: exercisesData, error: exercisesError } = await supabase
-      .from('exercises')
-      .select('*')
-      .order('name')
+    try {
+      const { data: exercisesData } = await supabase
+        .from('exercises')
+        .select('*')
+        .order('name')
 
-    console.log('Exercises query result:', { exercisesData, exercisesError })
+      const { data: weightsData } = await supabase
+        .from('user_exercise_weights')
+        .select('exercise_id, prescribed_weight')
+        .eq('user_id', user.id)
 
-    const { data: weightsData, error: weightsError } = await supabase
-      .from('user_exercise_weights')
-      .select('exercise_id, prescribed_weight')
-      .eq('user_id', user.id)
+      const { data: lastSession } = await supabase
+        .from('workout_sessions')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
 
-    console.log('Weights query result:', { weightsData, weightsError })
+      const { data: recentWorkoutsData } = await supabase
+        .from('workout_sessions')
+        .select(`
+          *,
+          workout_sets (
+            id,
+            exercise_id,
+            actual_weight,
+            actual_reps,
+            status,
+            exercises (name)
+          )
+        `)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .limit(3)
 
-    const { data: lastSession } = await supabase
-      .from('workout_sessions')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(1)
+      setExercises(exercisesData || [])
+      
+      const weightsMap = {}
+      weightsData?.forEach(w => {
+        weightsMap[w.exercise_id] = w.prescribed_weight
+      })
+      setUserWeights(weightsMap)
 
-    const { data: recentWorkoutsData } = await supabase
-      .from('workout_sessions')
-      .select(`
-        *,
-        workout_sets (
-          id,
-          exercise_id,
-          actual_weight,
-          actual_reps,
-          status,
-          exercises (name)
-        )
-      `)
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(3)
+      if (lastSession && lastSession.length > 0) {
+        const last = lastSession[0]
+        let nextWeek = last.week_number
+        let nextDay = getNextDay(last.day_type)
+        let nextCycle = last.cycle_number
 
-    setExercises(exercisesData || [])
-    
-    const weightsMap = {}
-    weightsData?.forEach(w => {
-      weightsMap[w.exercise_id] = w.prescribed_weight
-    })
-    setUserWeights(weightsMap)
-
-    if (lastSession && lastSession.length > 0) {
-      const last = lastSession[0]
-      let nextWeek = last.week_number
-      let nextDay = getNextDay(last.day_type)
-      let nextCycle = last.cycle_number
-
-      if (nextDay === 'Light' && last.day_type === 'Heavy') {
-        nextWeek += 1
-        if (nextWeek > 5) {
-          nextWeek = 1
-          nextCycle += 1
+        if (nextDay === 'Light' && last.day_type === 'Heavy') {
+          nextWeek += 1
+          if (nextWeek > 5) {
+            nextWeek = 1
+            nextCycle += 1
+          }
         }
+
+        setCurrentCycle({
+          week: nextWeek,
+          day: nextDay,
+          cycle: nextCycle
+        })
       }
 
-      setCurrentCycle({
-        week: nextWeek,
-        day: nextDay,
-        cycle: nextCycle
-      })
+      setRecentWorkouts(recentWorkoutsData || [])
+      await loadCardioData()
+    } catch (error) {
+      console.error('Error loading data:', error)
     }
-
-    setRecentWorkouts(recentWorkoutsData || [])
-    await loadCardioData()
-    
-    console.log('=== LOADDATA DEBUG END ===')
-  } catch (error) {
-    console.error('Error loading data:', error)
   }
-}
 
   const loadCardioData = async () => {
     if (!user) return
@@ -1319,7 +2181,6 @@ export default function WorkoutTracker() {
             {showWeightManager && (
               <div className="bg-slate-800 rounded-lg p-4 space-y-3">
                 <h3 className="text-lg font-semibold">Prescribed Weights (kg)</h3>
-                {console.log('Debug - exercises:', exercises, 'userWeights:', userWeights)}
                 {exercises.map(exercise => (
                   <div key={exercise.id} className="flex items-center justify-between">
                     <label className="flex-1">{exercise.name}</label>
