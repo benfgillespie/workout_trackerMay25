@@ -1,5 +1,6 @@
 'use client'
 
+import React from 'react'
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
@@ -113,7 +114,7 @@ export default function WorkoutTracker() {
     }
   }
 
-// Data loading functions
+  // Data loading functions
   const loadData = async (currentUser) => {
     if (!currentUser) return
     
@@ -568,7 +569,7 @@ export default function WorkoutTracker() {
     }
   }
 
-// Cardio functions
+  // Cardio functions
   const addCardioWorkout = async () => {
     if (!cardioType.trim() || cardioDuration <= 0) {
       alert('Please enter exercise type and duration')
@@ -785,6 +786,7 @@ export default function WorkoutTracker() {
           exercises (name)
         `)
         .eq('session_id', workout.id)
+        .eq('user_id', user.id)
         .order('exercise_id')
         .order('set_number')
 
@@ -848,7 +850,7 @@ export default function WorkoutTracker() {
     }
   }
 
-// Set management functions
+  // Set management functions - FIXED VERSIONS
   const addPrescribedSet = async (exerciseId, weight, reps) => {
     try {
       const exercise = exercises.find(e => e.id === exerciseId)
@@ -960,18 +962,18 @@ export default function WorkoutTracker() {
     return exerciseSets.length + 1
   }
 
-  const editRecordedSet = (set, index) => {
-    setEditingSet(index)
+  // FIXED: Record set editing functions
+  const editRecordedSet = (set, filteredIndex) => {
+    const actualIndex = workoutSets.findIndex(s => s.set_id === set.set_id)
+    setEditingSet(actualIndex)
     setEditWeight(set.actual_weight)
     setEditReps(set.actual_reps)
   }
 
-  const deleteRecordedSet = async (index) => {
+  const deleteRecordedSet = async (set) => {
     if (!confirm('Are you sure you want to delete this set?')) {
       return
     }
-
-    const set = workoutSets[index]
     
     try {
       if (set.set_id) {
@@ -981,14 +983,14 @@ export default function WorkoutTracker() {
           .eq('id', set.set_id)
       }
 
-      setWorkoutSets(prev => prev.filter((_, i) => i !== index))
+      setWorkoutSets(prev => prev.filter(s => s.set_id !== set.set_id))
 
     } catch (error) {
       console.error('Error deleting recorded set:', error)
     }
   }
 
-  // Loading and login screens
+// Loading and login screens
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-900 flex items-center justify-center">
@@ -1029,7 +1031,7 @@ export default function WorkoutTracker() {
     )
   }
 
-  // Main component JSX starts here
+  // Main component JSX
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       <div className="bg-slate-800 p-4 shadow-lg">
@@ -1039,6 +1041,198 @@ export default function WorkoutTracker() {
             <div className="text-slate-300 mt-2">
               Week {currentCycle.week} • {currentCycle.day} Day • Cycle {currentCycle.cycle}
             </div>
+
+            {/* FIXED: Recorded Sets Section */}
+            {workoutSets.filter(set => set.logged).length > 0 && (
+              <div className="bg-slate-800 rounded-lg p-4">
+                <h3 className="text-lg font-semibold mb-3">Recorded Sets</h3>
+                <div className="space-y-2">
+                  {workoutSets
+                    .filter(set => set.logged)
+                    .sort((a, b) => a.exercise_name.localeCompare(b.exercise_name))
+                    .map((set, filteredIndex) => {
+                      const actualIndex = workoutSets.findIndex(s => s.set_id === set.set_id)
+                      return (
+                        <div key={set.set_id || filteredIndex} className="flex items-center justify-between bg-slate-700 rounded p-3">
+                          {editingSet === actualIndex ? (
+                            <div className="flex items-center gap-2 flex-1">
+                              <span className="font-medium">{set.exercise_name}</span>
+                              <input
+                                type="number"
+                                step="0.25"
+                                value={editWeight}
+                                onChange={(e) => setEditWeight(parseFloat(e.target.value) || 0)}
+                                className="w-20 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                              />
+                              <span className="text-slate-400">×</span>
+                              <input
+                                type="number"
+                                value={editReps}
+                                onChange={(e) => setEditReps(parseInt(e.target.value) || 0)}
+                                className="w-16 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                              />
+                              <button
+                                onClick={() => {
+                                  const updatedSets = [...workoutSets]
+                                  updatedSets[actualIndex] = {
+                                    ...set,
+                                    actual_weight: editWeight,
+                                    actual_reps: editReps
+                                  }
+                                  setWorkoutSets(updatedSets)
+                                  logSet(actualIndex, editWeight, editReps)
+                                  setEditingSet(null)
+                                }}
+                                className="bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
+                              >
+                                Save
+                              </button>
+                              <button
+                                onClick={() => setEditingSet(null)}
+                                className="bg-slate-500 hover:bg-slate-400 px-2 py-1 rounded text-xs"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <div className="flex items-center gap-3">
+                                <span className="font-medium">{set.exercise_name}</span>
+                                <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
+                                <span className={`px-2 py-1 rounded text-xs ${
+                                  set.status === 'Complete' ? 'bg-green-600' :
+                                  set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
+                                }`}>
+                                  {set.status}
+                                </span>
+                                {isLevelUpEligible(set.exercise_id) && (
+                                  <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
+                                    🎉 Level Up!
+                                  </span>
+                                )}
+                              </div>
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => editRecordedSet(set, filteredIndex)}
+                                  className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
+                                >
+                                  Edit
+                                </button>
+                                <button
+                                  onClick={() => deleteRecordedSet(set)}
+                                  className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
+                                >
+                                  Delete
+                                </button>
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      )
+                    })}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-3">
+              {exercises.map(exercise => {
+                const prescribedWeight = userWeights[exercise.id] || 0
+                const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
+                const reps = getRepsForWeek(currentCycle.week)
+                
+                return (
+                  <div key={exercise.id} className="bg-slate-800 rounded-lg p-4">
+                    <div className="flex items-center justify-between mb-3">
+                      <div>
+                        <h4 className="font-semibold">{exercise.name}</h4>
+                        <div className="text-sm text-slate-300">
+                          Target: 2 sets × {reps} reps × {workoutWeight}kg
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => addPrescribedSet(exercise.id, workoutWeight, reps)}
+                          className="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm"
+                        >
+                          Add Prescribed Set
+                        </button>
+                        <button
+                          onClick={() => showCustomSetDialog(exercise.id, workoutWeight, reps)}
+                          className="bg-slate-600 hover:bg-slate-500 px-3 py-2 rounded text-sm"
+                        >
+                          Add Custom Set
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+
+            {/* Custom Set Dialog */}
+            {showingCustomDialog && (
+              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+                <div className="bg-slate-800 rounded-lg p-6 w-full max-w-sm">
+                  <h3 className="text-lg font-semibold mb-4">Add Custom Set</h3>
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-sm text-slate-300 mb-1">Weight (kg)</label>
+                      <input
+                        type="number"
+                        step="0.25"
+                        value={customWeight}
+                        onChange={(e) => setCustomWeight(parseFloat(e.target.value) || 0)}
+                        className="w-full bg-slate-700 text-white px-3 py-2 rounded"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm text-slate-300 mb-1">Reps</label>
+                      <input
+                        type="number"
+                        value={customReps}
+                        onChange={(e) => setCustomReps(parseInt(e.target.value) || 0)}
+                        className="w-full bg-slate-700 text-white px-3 py-2 rounded"
+                      />
+                    </div>
+                    <div className="flex gap-2 pt-2">
+                      <button
+                        onClick={addCustomSet}
+                        className="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded"
+                      >
+                        Add Set
+                      </button>
+                      <button
+                        onClick={() => setShowingCustomDialog(false)}
+                        className="flex-1 bg-slate-600 hover:bg-slate-500 py-2 rounded"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="flex gap-3">
+              <button
+                onClick={exitWorkout}
+                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg"
+              >
+                {isEditingCompletedWorkout ? 'Discard Changes' : 'Exit Workout'}
+              </button>
+              <button
+                onClick={finishWorkout}
+                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg"
+              >
+                {isEditingCompletedWorkout ? 'Save Changes' : 'Complete Workout'}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}>
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
@@ -1060,7 +1254,7 @@ export default function WorkoutTracker() {
       </div>
 
       <div className="p-4">
-{selectedWorkout ? (
+        {selectedWorkout ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -1249,7 +1443,7 @@ export default function WorkoutTracker() {
             </div>
           </div>
         ) : !currentWorkout ? (
-<div className="space-y-4">
+          <div className="space-y-4">
             <div className="bg-slate-800 rounded-lg p-4">
               <h3 className="text-lg font-semibold mb-3 text-blue-400">💪 Strength Training</h3>
               
@@ -1501,8 +1695,7 @@ export default function WorkoutTracker() {
               </div>
             )}
           </div>
-
-                    ) : (
+        ) : (
           <div className="space-y-4">
             <div className="bg-slate-800 rounded-lg p-4">
               <h2 className="text-xl font-bold mb-2">
@@ -1516,192 +1709,4 @@ export default function WorkoutTracker() {
                   </div>
                 )}
               </div>
-            </div>
-
-            {workoutSets.filter(set => set.logged).length > 0 && (
-              <div className="bg-slate-800 rounded-lg p-4">
-                <h3 className="text-lg font-semibold mb-3">Recorded Sets</h3>
-                <div className="space-y-2">
-                  {workoutSets
-                    .filter(set => set.logged)
-                    .sort((a, b) => a.exercise_name.localeCompare(b.exercise_name))
-                    .map((set, index) => (
-                    <div key={set.set_id || index} className="flex items-center justify-between bg-slate-700 rounded p-3">
-                      {editingSet === index ? (
-                        <div className="flex items-center gap-2 flex-1">
-                          <span className="font-medium">{set.exercise_name}</span>
-                          <input
-                            type="number"
-                            step="0.25"
-                            value={editWeight}
-                            onChange={(e) => setEditWeight(parseFloat(e.target.value) || 0)}
-                            className="w-20 bg-slate-600 text-white px-2 py-1 rounded text-sm"
-                          />
-                          <span className="text-slate-400">×</span>
-                          <input
-                            type="number"
-                            value={editReps}
-                            onChange={(e) => setEditReps(parseInt(e.target.value) || 0)}
-                            className="w-16 bg-slate-600 text-white px-2 py-1 rounded text-sm"
-                          />
-                          <button
-                            onClick={() => {
-                              const updatedSets = [...workoutSets]
-                              updatedSets[index] = {
-                                ...set,
-                                actual_weight: editWeight,
-                                actual_reps: editReps
-                              }
-                              setWorkoutSets(updatedSets)
-                              logSet(index, editWeight, editReps)
-                              setEditingSet(null)
-                            }}
-                            className="bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
-                          >
-                            Save
-                          </button>
-                          <button
-                            onClick={() => setEditingSet(null)}
-                            className="bg-slate-500 hover:bg-slate-400 px-2 py-1 rounded text-xs"
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      ) : (
-                        <>
-                          <div className="flex items-center gap-3">
-                            <span className="font-medium">{set.exercise_name}</span>
-                            <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
-                            <span className={`px-2 py-1 rounded text-xs ${
-                              set.status === 'Complete' ? 'bg-green-600' :
-                              set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
-                            }`}>
-                              {set.status}
-                            </span>
-                            {isLevelUpEligible(set.exercise_id) && (
-                              <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
-                                🎉 Level Up!
-                              </span>
-                            )}
-                          </div>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={() => editRecordedSet(set, index)}
-                              className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
-                            >
-                              Edit
-                            </button>
-                            <button
-                              onClick={() => deleteRecordedSet(index)}
-                              className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
-                            >
-                              Delete
-                            </button>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div className="space-y-3">
-              {exercises.map(exercise => {
-                const prescribedWeight = userWeights[exercise.id] || 0
-                const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
-                const reps = getRepsForWeek(currentCycle.week)
-                
-                return (
-                  <div key={exercise.id} className="bg-slate-800 rounded-lg p-4">
-                    <div className="flex items-center justify-between mb-3">
-                      <div>
-                        <h4 className="font-semibold">{exercise.name}</h4>
-                        <div className="text-sm text-slate-300">
-                          Target: 2 sets × {reps} reps × {workoutWeight}kg
-                        </div>
-                      </div>
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => addPrescribedSet(exercise.id, workoutWeight, reps)}
-                          className="bg-blue-600 hover:bg-blue-700 px-3 py-2 rounded text-sm"
-                        >
-                          Add Prescribed Set
-                        </button>
-                        <button
-                          onClick={() => showCustomSetDialog(exercise.id, workoutWeight, reps)}
-                          className="bg-slate-600 hover:bg-slate-500 px-3 py-2 rounded text-sm"
-                        >
-                          Add Custom Set
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-
-            {/* Custom Set Dialog */}
-            {showingCustomDialog && (
-              <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-                <div className="bg-slate-800 rounded-lg p-6 w-full max-w-sm">
-                  <h3 className="text-lg font-semibold mb-4">Add Custom Set</h3>
-                  <div className="space-y-3">
-                    <div>
-                      <label className="block text-sm text-slate-300 mb-1">Weight (kg)</label>
-                      <input
-                        type="number"
-                        step="0.25"
-                        value={customWeight}
-                        onChange={(e) => setCustomWeight(parseFloat(e.target.value) || 0)}
-                        className="w-full bg-slate-700 text-white px-3 py-2 rounded"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-sm text-slate-300 mb-1">Reps</label>
-                      <input
-                        type="number"
-                        value={customReps}
-                        onChange={(e) => setCustomReps(parseInt(e.target.value) || 0)}
-                        className="w-full bg-slate-700 text-white px-3 py-2 rounded"
-                      />
-                    </div>
-                    <div className="flex gap-2 pt-2">
-                      <button
-                        onClick={addCustomSet}
-                        className="flex-1 bg-green-600 hover:bg-green-700 py-2 rounded"
-                      >
-                        Add Set
-                      </button>
-                      <button
-                        onClick={() => setShowingCustomDialog(false)}
-                        className="flex-1 bg-slate-600 hover:bg-slate-500 py-2 rounded"
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="flex gap-3">
-              <button
-                onClick={exitWorkout}
-                className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg"
-              >
-                {isEditingCompletedWorkout ? 'Discard Changes' : 'Exit Workout'}
-              </button>
-              <button
-                onClick={finishWorkout}
-                className="flex-1 bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg"
-              >
-                {isEditingCompletedWorkout ? 'Save Changes' : 'Complete Workout'}
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
+            </div
