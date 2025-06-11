@@ -1,6 +1,5 @@
 'use client'
 
-import React from 'react'
 import { useState, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
@@ -64,6 +63,813 @@ export default function WorkoutTracker() {
 
   const checkUser = async () => {
     try {
+      const { data: { session } } = await supabase.auth.getSession()
+      if (session?.user) {
+        setUser(session.user)
+        await loadData(session.user)
+      }
+    } catch (error) {
+      console.error('Error checking user:', error)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const clearUserData = () => {
+    setExercises([])
+    setUserWeights({})
+    setCurrentWorkout(null)
+    setWorkoutSets([])
+    setRecentWorkouts([])
+    setRecentCardio([])
+  }
+
+  const signInWithGoogle = async () => {
+    try {
+      const { data, error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: window.location.origin
+        }
+      })
+      
+      if (data?.url) {
+        window.location.href = data.url
+      }
+      
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing in with Google:', error)
+      alert('Failed to sign in with Google: ' + error.message)
+    }
+  }
+
+  const signOut = async () => {
+    try {
+      const { error } = await supabase.auth.signOut()
+      if (error) throw error
+    } catch (error) {
+      console.error('Error signing out:', error)
+    }
+  }
+
+// Data loading functions
+  const loadData = async (currentUser) => {
+    if (!currentUser) return
+    
+    try {
+      // Load exercises first
+      const { data: exercisesData, error: exercisesError } = await supabase
+        .from('exercises')
+        .select('*')
+        .order('name')
+
+      if (exercisesError) {
+        console.error('Error loading exercises:', exercisesError)
+        return
+      }
+
+      // If no exercises exist, create default ones
+      if (!exercisesData || exercisesData.length === 0) {
+        await createDefaultExercises()
+        return loadData(currentUser) // Reload after creating exercises
+      }
+
+      // Load user weights
+      const { data: weightsData, error: weightsError } = await supabase
+        .from('user_exercise_weights')
+        .select('exercise_id, prescribed_weight')
+        .eq('user_id', currentUser.id)
+
+      if (weightsError) {
+        console.error('Error loading weights:', weightsError)
+      }
+
+      // Create default weights for new users
+      if (!weightsData || weightsData.length === 0) {
+        await createDefaultWeights(currentUser.id, exercisesData)
+        return loadData(currentUser) // Reload after creating weights
+      }
+
+      // Load workout session data
+      const { data: lastSession } = await supabase
+        .from('workout_sessions')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+
+      const { data: recentWorkoutsData } = await supabase
+        .from('workout_sessions')
+        .select(`
+          *,
+          workout_sets (
+            id,
+            exercise_id,
+            actual_weight,
+            actual_reps,
+            status,
+            exercises (name)
+          )
+        `)
+        .eq('user_id', currentUser.id)
+        .order('created_at', { ascending: false })
+        .limit(3)
+
+      // Set state
+      setExercises(exercisesData)
+      
+      const weightsMap = {}
+      weightsData?.forEach(w => {
+        weightsMap[w.exercise_id] = w.prescribed_weight
+      })
+      setUserWeights(weightsMap)
+
+      // Calculate next cycle
+      if (lastSession && lastSession.length > 0) {
+        const last = lastSession[0]
+        let nextWeek = last.week_number
+        let nextDay = getNextDay(last.day_type)
+        let nextCycle = last.cycle_number
+
+        if (nextDay === 'Light' && last.day_type === 'Heavy') {
+          nextWeek += 1
+          if (nextWeek > 5) {
+            nextWeek = 1
+            nextCycle += 1
+          }
+        }
+
+        setCurrentCycle({
+          week: nextWeek,
+          day: nextDay,
+          cycle: nextCycle
+        })
+      }
+
+      setRecentWorkouts(recentWorkoutsData || [])
+      await loadCardioData(currentUser)
+      
+    } catch (error) {
+      console.error('Error loading data:', error)
+    }
+  }
+
+  const createDefaultExercises = async () => {
+    const defaultExercises = [
+      { name: 'Squat', category: 'Legs' },
+      { name: 'Bench Press', category: 'Chest' },
+      { name: 'Bent-Over Row', category: 'Back' },
+      { name: 'Overhead Press', category: 'Shoulders' },
+      { name: 'Deadlift', category: 'Back' }
+    ]
+
+    try {
+      const { error } = await supabase
+        .from('exercises')
+        .insert(defaultExercises)
+
+      if (error) throw error
+    } catch (error) {
+      console.error('Error creating default exercises:', error)
+    }
+  }
+
+  const createDefaultWeights = async (userId, exercises) => {
+    const defaultWeights = exercises.map(exercise => ({
+      user_id: userId,
+      exercise_id: exercise.id,
+      prescribed_weight: 20 // Default starting weight
+    }))
+
+    try {
+      const { error } = await supabase
+        .from('user_exercise_weights')
+        .insert(defaultWeights)
+
+      if (error) throw error
+    } catch (error) {
+      console.error('Error creating default weights:', error)
+    }
+  }
+
+  const loadCardioData = async (currentUser) => {
+    if (!currentUser) return
+    
+    try {
+      const { data: cardioData } = await supabase
+        .from('cardio_sessions')
+        .select('*')
+        .eq('user_id', currentUser.id)
+        .order('workout_date', { ascending: false })
+        .limit(5)
+
+      setRecentCardio(cardioData || [])
+
+      // Calculate 4x4 tracking
+      const today = new Date()
+      const currentSunday = getNextSunday(today)
+      
+      const { data: last4x4 } = await supabase
+        .from('cardio_sessions')
+        .select('workout_date')
+        .eq('user_id', currentUser.id)
+        .eq('is_4x4', true)
+        .order('workout_date', { ascending: false })
+        .limit(1)
+
+      let nextDueDate = currentSunday
+      if (last4x4 && last4x4.length > 0) {
+        const lastDate = new Date(last4x4[0].workout_date)
+        const lastSunday = getNextSunday(lastDate)
+        nextDueDate = new Date(lastSunday)
+        nextDueDate.setDate(nextDueDate.getDate() + 7)
+      }
+
+      setNext4x4Date(nextDueDate)
+
+      // Calculate missed 4x4 sessions
+      const twelveWeeksAgo = new Date()
+      twelveWeeksAgo.setDate(twelveWeeksAgo.getDate() - (12 * 7))
+      
+      const { data: recent4x4s } = await supabase
+        .from('cardio_sessions')
+        .select('workout_date')
+        .eq('user_id', currentUser.id)
+        .eq('is_4x4', true)
+        .gte('workout_date', twelveWeeksAgo.toISOString().split('T')[0])
+
+      const completedWeeks = new Set()
+      recent4x4s?.forEach(session => {
+        const date = new Date(session.workout_date)
+        const weekStart = getWeekStart(date)
+        completedWeeks.add(weekStart.toISOString().split('T')[0])
+      })
+
+      const missedCount = 12 - completedWeeks.size
+      setMissed4x4Count(Math.max(0, missedCount))
+
+      // Calculate Zone 2 minutes
+      const sevenDaysAgo = new Date()
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
+      
+      const { data: recentCardioForZone2 } = await supabase
+        .from('cardio_sessions')
+        .select('duration_minutes, is_4x4')
+        .eq('user_id', currentUser.id)
+        .gte('workout_date', sevenDaysAgo.toISOString().split('T')[0])
+
+      const totalZone2Minutes = recentCardioForZone2?.reduce((sum, session) => {
+        return session.is_4x4 ? sum : sum + session.duration_minutes
+      }, 0) || 0
+      
+      setZone2Minutes(totalZone2Minutes)
+
+    } catch (error) {
+      console.error('Error loading cardio data:', error)
+    }
+  }
+
+// Utility functions
+  const getNextSunday = (date) => {
+    const result = new Date(date)
+    result.setDate(result.getDate() + (7 - result.getDay()) % 7)
+    return result
+  }
+
+  const getWeekStart = (date) => {
+    const result = new Date(date)
+    result.setDate(result.getDate() - result.getDay())
+    return result
+  }
+
+  const getNextDay = (currentDay) => {
+    const dayOrder = ['Light', 'Medium', 'Heavy']
+    const currentIndex = dayOrder.indexOf(currentDay)
+    return dayOrder[(currentIndex + 1) % dayOrder.length]
+  }
+
+  const calculateWorkoutWeight = (prescribedWeight, dayType) => {
+    const multipliers = { Light: 0.8, Medium: 0.9, Heavy: 1.0 }
+    return Math.round(prescribedWeight * multipliers[dayType] * 4) / 4
+  }
+
+  const getRepsForWeek = (week) => {
+    return 6 + week + 1
+  }
+
+  const formatDate = (date) => {
+    return date.toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    })
+  }
+
+  const formatDateString = (dateString) => {
+    return new Date(dateString).toLocaleDateString('en-GB', {
+      weekday: 'short',
+      day: 'numeric',
+      month: 'short'
+    })
+  }
+
+  const getWorkoutSummary = (workout) => {
+    if (!workout.workout_sets) return 'No sets logged'
+    
+    const completedSets = workout.workout_sets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+    const totalSets = workout.workout_sets.length
+    
+    return `${completedSets.length}/${totalSets} sets completed`
+  }
+
+  const isLevelUpEligible = (exerciseId, sets = workoutSets) => {
+    if (currentCycle.week !== 5 || currentCycle.day !== 'Heavy') {
+      return false
+    }
+    
+    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
+    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+    
+    return completedSets.length >= 2
+  }
+
+  const getWeeklyWorkoutCount = () => {
+    const today = new Date()
+    const startOfWeek = new Date(today)
+    const dayOfWeek = today.getDay()
+    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
+    startOfWeek.setDate(today.getDate() - daysFromMonday)
+    
+    return recentWorkouts.filter(workout => {
+      const workoutDate = new Date(workout.workout_date)
+      return workoutDate >= startOfWeek
+    }).length
+  }
+
+  // Workout functions
+  const startWorkout = async () => {
+    try {
+      const { data: session, error } = await supabase
+        .from('workout_sessions')
+        .insert({
+          user_id: user.id,
+          workout_date: new Date().toISOString().split('T')[0],
+          week_number: currentCycle.week,
+          day_type: currentCycle.day,
+          cycle_number: currentCycle.cycle
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      setCurrentWorkout(session)
+      setIsEditingCompletedWorkout(false)
+
+      const sets = []
+      exercises.forEach(exercise => {
+        const prescribedWeight = userWeights[exercise.id] || 0
+        const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
+        const reps = getRepsForWeek(currentCycle.week)
+
+        for (let i = 1; i <= 2; i++) {
+          sets.push({
+            exercise_id: exercise.id,
+            exercise_name: exercise.name,
+            prescribed_weight: workoutWeight,
+            prescribed_reps: reps,
+            set_number: i,
+            status: 'Incomplete',
+            session_id: session.id
+          })
+        }
+      })
+
+      setWorkoutSets(sets)
+    } catch (error) {
+      console.error('Error starting workout:', error)
+    }
+  }
+
+  const logSet = async (setIndex, actualWeight, actualReps) => {
+    const set = workoutSets[setIndex]
+    let status = 'Incomplete'
+
+    if (actualReps >= set.prescribed_reps && actualWeight >= set.prescribed_weight) {
+      status = actualReps > set.prescribed_reps || actualWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
+    }
+
+    try {
+      let setId
+      
+      if (set.set_id) {
+        await supabase
+          .from('workout_sets')
+          .update({
+            prescribed_weight: set.prescribed_weight,
+            actual_weight: actualWeight,
+            prescribed_reps: set.prescribed_reps,
+            actual_reps: actualReps,
+            status: status
+          })
+          .eq('id', set.set_id)
+        
+        setId = set.set_id
+      } else {
+        const { data: newSet } = await supabase
+          .from('workout_sets')
+          .insert({
+            user_id: user.id,
+            session_id: set.session_id,
+            exercise_id: set.exercise_id,
+            prescribed_weight: set.prescribed_weight,
+            actual_weight: actualWeight,
+            prescribed_reps: set.prescribed_reps,
+            actual_reps: actualReps,
+            set_number: set.set_number,
+            status: status
+          })
+          .select()
+          .single()
+        
+        setId = newSet.id
+      }
+
+      const updatedSets = [...workoutSets]
+      updatedSets[setIndex] = {
+        ...set,
+        actual_weight: actualWeight,
+        actual_reps: actualReps,
+        status: status,
+        logged: true,
+        set_id: setId
+      }
+      setWorkoutSets(updatedSets)
+
+      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
+        checkForLevelUp(set.exercise_id, updatedSets)
+      }
+
+    } catch (error) {
+      console.error('Error logging set:', error)
+    }
+  }
+
+  const checkForLevelUp = async (exerciseId, sets) => {
+    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
+    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
+
+    if (completedSets.length >= 2) {
+      const currentWeight = userWeights[exerciseId]
+      const newWeight = Math.round(currentWeight * 1.1 * 4) / 4
+
+      try {
+        await supabase
+          .from('user_exercise_weights')
+          .update({ prescribed_weight: newWeight, updated_at: new Date().toISOString() })
+          .eq('exercise_id', exerciseId)
+          .eq('user_id', user.id)
+
+        setUserWeights(prev => ({
+          ...prev,
+          [exerciseId]: newWeight
+        }))
+
+        const exerciseName = exercises.find(e => e.id === exerciseId)?.name
+        alert(`🎉 LEVEL UP! ${exerciseName} increased to ${newWeight}kg`)
+      } catch (error) {
+        console.error('Error updating weight:', error)
+      }
+    }
+  }
+
+  const finishWorkout = () => {
+    setCurrentWorkout(null)
+    setWorkoutSets([])
+    setIsEditingCompletedWorkout(false)
+    loadData(user)
+  }
+
+  const exitWorkout = () => {
+    if (isEditingCompletedWorkout) {
+      if (confirm('Discard changes and return to workout history?')) {
+        setCurrentWorkout(null)
+        setWorkoutSets([])
+        setIsEditingCompletedWorkout(false)
+        loadData(user)
+      }
+    } else {
+      if (confirm('Are you sure you want to exit this workout? Your progress will be saved but the workout will remain incomplete.')) {
+        setCurrentWorkout(null)
+        setWorkoutSets([])
+        setIsEditingCompletedWorkout(false)
+      }
+    }
+  }
+
+// Cardio functions
+  const addCardioWorkout = async () => {
+    if (!cardioType.trim() || cardioDuration <= 0) {
+      alert('Please enter exercise type and duration')
+      return
+    }
+
+    try {
+      await supabase
+        .from('cardio_sessions')
+        .insert({
+          user_id: user.id,
+          workout_date: new Date().toISOString().split('T')[0],
+          exercise_type: cardioType,
+          duration_minutes: cardioDuration,
+          is_4x4: cardioIs4x4
+        })
+
+      setCardioType('')
+      setCardioDuration(0)
+      setCardioIs4x4(false)
+      setShowCardioDialog(false)
+
+      loadCardioData(user)
+
+      const message = `Cardio workout logged: ${cardioType} for ${cardioDuration} minutes${cardioIs4x4 ? ' (Norwegian 4x4)' : ''}`
+      alert(message)
+
+    } catch (error) {
+      console.error('Error adding cardio workout:', error)
+      alert('Failed to log cardio workout')
+    }
+  }
+
+  // Weight management functions
+  const updateWeight = async (exerciseId, newWeight) => {
+    try {
+      await supabase
+        .from('user_exercise_weights')
+        .update({ prescribed_weight: newWeight })
+        .eq('exercise_id', exerciseId)
+        .eq('user_id', user.id)
+
+      setUserWeights(prev => ({
+        ...prev,
+        [exerciseId]: newWeight
+      }))
+    } catch (error) {
+      console.error('Error updating weight:', error)
+    }
+  }
+
+  // Workout history functions
+  const loadAllWorkouts = async () => {
+    try {
+      const { data: allWorkoutsData } = await supabase
+        .from('workout_sessions')
+        .select(`
+          *,
+          workout_sets (
+            id,
+            exercise_id,
+            actual_weight,
+            actual_reps,
+            status,
+            exercises (name)
+          )
+        `)
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+      
+      setAllWorkouts(allWorkoutsData || [])
+      setShowAllWorkouts(true)
+    } catch (error) {
+      console.error('Error loading all workouts:', error)
+    }
+  }
+
+  const loadWorkoutDetails = async (workout) => {
+    try {
+      const { data: setsData } = await supabase
+        .from('workout_sets')
+        .select(`
+          *,
+          exercises (name)
+        `)
+        .eq('session_id', workout.id)
+        .eq('user_id', user.id)
+        .order('exercise_id', { ascending: true })
+        .order('set_number', { ascending: true })
+      
+      setWorkoutDetails(setsData || [])
+      setSelectedWorkout(workout)
+    } catch (error) {
+      console.error('Error loading workout details:', error)
+    }
+  }
+
+  const deleteWorkout = async (workoutId) => {
+    if (!confirm('Are you sure you want to delete this workout? This action cannot be undone.')) {
+      return
+    }
+
+    try {
+      await supabase
+        .from('workout_sets')
+        .delete()
+        .eq('session_id', workoutId)
+        .eq('user_id', user.id)
+
+      await supabase
+        .from('workout_sessions')
+        .delete()
+        .eq('id', workoutId)
+        .eq('user_id', user.id)
+
+      loadData(user)
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+      
+      if (selectedWorkout?.id === workoutId) {
+        setSelectedWorkout(null)
+      }
+
+      alert('Workout deleted successfully!')
+    } catch (error) {
+      console.error('Error deleting workout:', error)
+      alert('Failed to delete workout. Please try again.')
+    }
+  }
+
+  // Set editing functions
+  const startEditSet = (set) => {
+    setEditingSet(set.id)
+    setEditWeight(set.actual_weight)
+    setEditReps(set.actual_reps)
+  }
+
+  const saveEditSet = async (setId) => {
+    try {
+      const set = workoutDetails.find(s => s.id === setId)
+      let newStatus = 'Incomplete'
+      
+      if (editReps >= set.prescribed_reps && editWeight >= set.prescribed_weight) {
+        newStatus = editReps > set.prescribed_reps || editWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
+      }
+
+      await supabase
+        .from('workout_sets')
+        .update({
+          actual_weight: editWeight,
+          actual_reps: editReps,
+          status: newStatus
+        })
+        .eq('id', setId)
+
+      setWorkoutDetails(prev => prev.map(s => 
+        s.id === setId 
+          ? { ...s, actual_weight: editWeight, actual_reps: editReps, status: newStatus }
+          : s
+      ))
+
+      setEditingSet(null)
+      loadData(user)
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+
+    } catch (error) {
+      console.error('Error updating set:', error)
+      alert('Failed to update set. Please try again.')
+    }
+  }
+
+  const cancelEditSet = () => {
+    setEditingSet(null)
+    setEditWeight(0)
+    setEditReps(0)
+  }
+
+  const deleteSet = async (setId) => {
+    if (!confirm('Are you sure you want to delete this set?')) {
+      return
+    }
+
+    try {
+      await supabase
+        .from('workout_sets')
+        .delete()
+        .eq('id', setId)
+
+      setWorkoutDetails(prev => prev.filter(s => s.id !== setId))
+      loadData(user)
+      if (showAllWorkouts) {
+        loadAllWorkouts()
+      }
+
+    } catch (error) {
+      console.error('Error deleting set:', error)
+      alert('Failed to delete set. Please try again.')
+    }
+  }
+
+  // Workout editing functions
+  const editWorkout = async (workout) => {
+    try {
+      setCurrentWorkout(workout)
+      setIsEditingCompletedWorkout(true)
+      
+      const { data: existingSets } = await supabase
+        .from('workout_sets')
+        .select(`
+          *,
+          exercises (name)
+        `)
+        .eq('session_id', workout.id)
+        .order('exercise_id')
+        .order('set_number')
+
+      const convertedSets = existingSets.map(set => ({
+        exercise_id: set.exercise_id,
+        exercise_name: set.exercises.name,
+        prescribed_weight: set.prescribed_weight,
+        prescribed_reps: set.prescribed_reps,
+        set_number: set.set_number,
+        status: set.status,
+        session_id: set.session_id,
+        actual_weight: set.actual_weight,
+        actual_reps: set.actual_reps,
+        logged: true,
+        set_id: set.id
+      }))
+
+      const existingExerciseIds = new Set(existingSets.map(s => s.exercise_id))
+      const reps = getRepsForWeek(workout.week_number)
+      
+      exercises.forEach(exercise => {
+        if (!existingExerciseIds.has(exercise.id)) {
+          const prescribedWeight = userWeights[exercise.id] || 0
+          const workoutWeight = calculateWorkoutWeight(prescribedWeight, workout.day_type)
+          
+          for (let i = 1; i <= 2; i++) {
+            convertedSets.push({
+              exercise_id: exercise.id,
+              exercise_name: exercise.name,
+              prescribed_weight: workoutWeight,
+              prescribed_reps: reps,
+              set_number: i,
+              status: 'Incomplete',
+              session_id: workout.id,
+              logged: false
+            })
+          }
+        }
+      })
+
+      convertedSets.sort((a, b) => {
+        if (a.exercise_name !== b.exercise_name) {
+          return a.exercise_name.localeCompare(b.exercise_name)
+        }
+        return a.set_number - b.set_number
+      })
+
+      setWorkoutSets(convertedSets)
+      
+      setCurrentCycle({
+        week: workout.week_number,
+        day: workout.day_type,
+        cycle: workout.cycle_number
+      })
+
+      setSelectedWorkout(null)
+      
+    } catch (error) {
+      console.error('Error editing workout:', error)
+      alert('Failed to load workout for editing. Please try again.')
+    }
+  }
+
+// Set management functions
+  const addPrescribedSet = async (exerciseId, weight, reps) => {
+    try {
+      const exercise = exercises.find(e => e.id === exerciseId)
+      const nextSetNumber = getNextSetNumber(exerciseId)
+      
+      const { data: newSet } = await supabase
+        .from('workout_sets')
+        .insert({
+          user_id: user.id,
+          session_id: currentWorkout.id,
+          exercise_id: exerciseId,
+          prescribed_weight: weight,
+          actual_weight: weight,
+          prescribed_reps: reps,
+          actual_reps: reps,
+          set_number: nextSetNumber,
+          status: 'Complete'
+        })
+        .select()
+        .single()
+
       const newWorkoutSet = {
         exercise_id: exerciseId,
         exercise_name: exercise.name,
@@ -154,18 +960,18 @@ export default function WorkoutTracker() {
     return exerciseSets.length + 1
   }
 
-  // FIXED: Record set editing functions
-  const editRecordedSet = (set, filteredIndex) => {
-    const actualIndex = workoutSets.findIndex(s => s.set_id === set.set_id)
-    setEditingSet(actualIndex)
+  const editRecordedSet = (set, index) => {
+    setEditingSet(index)
     setEditWeight(set.actual_weight)
     setEditReps(set.actual_reps)
   }
 
-  const deleteRecordedSet = async (set) => {
+  const deleteRecordedSet = async (index) => {
     if (!confirm('Are you sure you want to delete this set?')) {
       return
     }
+
+    const set = workoutSets[index]
     
     try {
       if (set.set_id) {
@@ -175,7 +981,7 @@ export default function WorkoutTracker() {
           .eq('id', set.set_id)
       }
 
-      setWorkoutSets(prev => prev.filter(s => s.set_id !== set.set_id))
+      setWorkoutSets(prev => prev.filter((_, i) => i !== index))
 
     } catch (error) {
       console.error('Error deleting recorded set:', error)
@@ -223,7 +1029,7 @@ export default function WorkoutTracker() {
     )
   }
 
-  // Main component JSX
+  // Main component JSX starts here
   return (
     <div className="min-h-screen bg-slate-900 text-white">
       <div className="bg-slate-800 p-4 shadow-lg">
@@ -254,7 +1060,7 @@ export default function WorkoutTracker() {
       </div>
 
       <div className="p-4">
-        {selectedWorkout ? (
+{selectedWorkout ? (
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -443,7 +1249,7 @@ export default function WorkoutTracker() {
             </div>
           </div>
         ) : !currentWorkout ? (
-          <div className="space-y-4">
+<div className="space-y-4">
             <div className="bg-slate-800 rounded-lg p-4">
               <h3 className="text-lg font-semibold mb-3 text-blue-400">💪 Strength Training</h3>
               
@@ -695,7 +1501,8 @@ export default function WorkoutTracker() {
               </div>
             )}
           </div>
-        ) : (
+
+                    ) : (
           <div className="space-y-4">
             <div className="bg-slate-800 rounded-lg p-4">
               <h2 className="text-xl font-bold mb-2">
@@ -711,7 +1518,6 @@ export default function WorkoutTracker() {
               </div>
             </div>
 
-            {/* FIXED: Recorded Sets Section */}
             {workoutSets.filter(set => set.logged).length > 0 && (
               <div className="bg-slate-800 rounded-lg p-4">
                 <h3 className="text-lg font-semibold mb-3">Recorded Sets</h3>
@@ -719,86 +1525,83 @@ export default function WorkoutTracker() {
                   {workoutSets
                     .filter(set => set.logged)
                     .sort((a, b) => a.exercise_name.localeCompare(b.exercise_name))
-                    .map((set, filteredIndex) => {
-                      const actualIndex = workoutSets.findIndex(s => s.set_id === set.set_id)
-                      return (
-                        <div key={set.set_id || filteredIndex} className="flex items-center justify-between bg-slate-700 rounded p-3">
-                          {editingSet === actualIndex ? (
-                            <div className="flex items-center gap-2 flex-1">
-                              <span className="font-medium">{set.exercise_name}</span>
-                              <input
-                                type="number"
-                                step="0.25"
-                                value={editWeight}
-                                onChange={(e) => setEditWeight(parseFloat(e.target.value) || 0)}
-                                className="w-20 bg-slate-600 text-white px-2 py-1 rounded text-sm"
-                              />
-                              <span className="text-slate-400">×</span>
-                              <input
-                                type="number"
-                                value={editReps}
-                                onChange={(e) => setEditReps(parseInt(e.target.value) || 0)}
-                                className="w-16 bg-slate-600 text-white px-2 py-1 rounded text-sm"
-                              />
-                              <button
-                                onClick={() => {
-                                  const updatedSets = [...workoutSets]
-                                  updatedSets[actualIndex] = {
-                                    ...set,
-                                    actual_weight: editWeight,
-                                    actual_reps: editReps
-                                  }
-                                  setWorkoutSets(updatedSets)
-                                  logSet(actualIndex, editWeight, editReps)
-                                  setEditingSet(null)
-                                }}
-                                className="bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={() => setEditingSet(null)}
-                                className="bg-slate-500 hover:bg-slate-400 px-2 py-1 rounded text-xs"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          ) : (
-                            <>
-                              <div className="flex items-center gap-3">
-                                <span className="font-medium">{set.exercise_name}</span>
-                                <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
-                                <span className={`px-2 py-1 rounded text-xs ${
-                                  set.status === 'Complete' ? 'bg-green-600' :
-                                  set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
-                                }`}>
-                                  {set.status}
-                                </span>
-                                {isLevelUpEligible(set.exercise_id) && (
-                                  <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
-                                    🎉 Level Up!
-                                  </span>
-                                )}
-                              </div>
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => editRecordedSet(set, filteredIndex)}
-                                  className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
-                                >
-                                  Edit
-                                </button>
-                                <button
-                                  onClick={() => deleteRecordedSet(set)}
-                                  className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
-                                >
-                                  Delete
-                                </button>
-                              </div>
-                            </>
-                          )}
+                    .map((set, index) => (
+                    <div key={set.set_id || index} className="flex items-center justify-between bg-slate-700 rounded p-3">
+                      {editingSet === index ? (
+                        <div className="flex items-center gap-2 flex-1">
+                          <span className="font-medium">{set.exercise_name}</span>
+                          <input
+                            type="number"
+                            step="0.25"
+                            value={editWeight}
+                            onChange={(e) => setEditWeight(parseFloat(e.target.value) || 0)}
+                            className="w-20 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                          />
+                          <span className="text-slate-400">×</span>
+                          <input
+                            type="number"
+                            value={editReps}
+                            onChange={(e) => setEditReps(parseInt(e.target.value) || 0)}
+                            className="w-16 bg-slate-600 text-white px-2 py-1 rounded text-sm"
+                          />
+                          <button
+                            onClick={() => {
+                              const updatedSets = [...workoutSets]
+                              updatedSets[index] = {
+                                ...set,
+                                actual_weight: editWeight,
+                                actual_reps: editReps
+                              }
+                              setWorkoutSets(updatedSets)
+                              logSet(index, editWeight, editReps)
+                              setEditingSet(null)
+                            }}
+                            className="bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
+                          >
+                            Save
+                          </button>
+                          <button
+                            onClick={() => setEditingSet(null)}
+                            className="bg-slate-500 hover:bg-slate-400 px-2 py-1 rounded text-xs"
+                          >
+                            Cancel
+                          </button>
                         </div>
-                      )
-                    })}
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-3">
+                            <span className="font-medium">{set.exercise_name}</span>
+                            <span className="font-mono text-sm">{set.actual_weight}kg × {set.actual_reps} reps</span>
+                            <span className={`px-2 py-1 rounded text-xs ${
+                              set.status === 'Complete' ? 'bg-green-600' :
+                              set.status === 'Exceeded' ? 'bg-blue-600' : 'bg-red-600'
+                            }`}>
+                              {set.status}
+                            </span>
+                            {isLevelUpEligible(set.exercise_id) && (
+                              <span className="px-2 py-1 rounded text-xs bg-yellow-600 font-bold">
+                                🎉 Level Up!
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex gap-2">
+                            <button
+                              onClick={() => editRecordedSet(set, index)}
+                              className="bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              onClick={() => deleteRecordedSet(index)}
+                              className="bg-red-600 hover:bg-red-700 px-2 py-1 rounded text-xs"
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  ))}
                 </div>
               </div>
             )}
@@ -901,837 +1704,4 @@ export default function WorkoutTracker() {
       </div>
     </div>
   )
-} { data: { session } } = await supabase.auth.getSession()
-      if (session?.user) {
-        setUser(session.user)
-        await loadData(session.user)
-      }
-    } catch (error) {
-      console.error('Error checking user:', error)
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const clearUserData = () => {
-    setExercises([])
-    setUserWeights({})
-    setCurrentWorkout(null)
-    setWorkoutSets([])
-    setRecentWorkouts([])
-    setRecentCardio([])
-  }
-
-  const signInWithGoogle = async () => {
-    try {
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider: 'google',
-        options: {
-          redirectTo: window.location.origin
-        }
-      })
-      
-      if (data?.url) {
-        window.location.href = data.url
-      }
-      
-      if (error) throw error
-    } catch (error) {
-      console.error('Error signing in with Google:', error)
-      alert('Failed to sign in with Google: ' + error.message)
-    }
-  }
-
-  const signOut = async () => {
-    try {
-      const { error } = await supabase.auth.signOut()
-      if (error) throw error
-    } catch (error) {
-      console.error('Error signing out:', error)
-    }
-  }
-
-  // Data loading functions
-  const loadData = async (currentUser) => {
-    if (!currentUser) return
-    
-    try {
-      // Load exercises first
-      const { data: exercisesData, error: exercisesError } = await supabase
-        .from('exercises')
-        .select('*')
-        .order('name')
-
-      if (exercisesError) {
-        console.error('Error loading exercises:', exercisesError)
-        return
-      }
-
-      // If no exercises exist, create default ones
-      if (!exercisesData || exercisesData.length === 0) {
-        await createDefaultExercises()
-        return loadData(currentUser) // Reload after creating exercises
-      }
-
-      // Load user weights
-      const { data: weightsData, error: weightsError } = await supabase
-        .from('user_exercise_weights')
-        .select('exercise_id, prescribed_weight')
-        .eq('user_id', currentUser.id)
-
-      if (weightsError) {
-        console.error('Error loading weights:', weightsError)
-      }
-
-      // Create default weights for new users
-      if (!weightsData || weightsData.length === 0) {
-        await createDefaultWeights(currentUser.id, exercisesData)
-        return loadData(currentUser) // Reload after creating weights
-      }
-
-      // Load workout session data
-      const { data: lastSession } = await supabase
-        .from('workout_sessions')
-        .select('*')
-        .eq('user_id', currentUser.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-
-      const { data: recentWorkoutsData } = await supabase
-        .from('workout_sessions')
-        .select(`
-          *,
-          workout_sets (
-            id,
-            exercise_id,
-            actual_weight,
-            actual_reps,
-            status,
-            exercises (name)
-          )
-        `)
-        .eq('user_id', currentUser.id)
-        .order('created_at', { ascending: false })
-        .limit(3)
-
-      // Set state
-      setExercises(exercisesData)
-      
-      const weightsMap = {}
-      weightsData?.forEach(w => {
-        weightsMap[w.exercise_id] = w.prescribed_weight
-      })
-      setUserWeights(weightsMap)
-
-      // Calculate next cycle
-      if (lastSession && lastSession.length > 0) {
-        const last = lastSession[0]
-        let nextWeek = last.week_number
-        let nextDay = getNextDay(last.day_type)
-        let nextCycle = last.cycle_number
-
-        if (nextDay === 'Light' && last.day_type === 'Heavy') {
-          nextWeek += 1
-          if (nextWeek > 5) {
-            nextWeek = 1
-            nextCycle += 1
-          }
-        }
-
-        setCurrentCycle({
-          week: nextWeek,
-          day: nextDay,
-          cycle: nextCycle
-        })
-      }
-
-      setRecentWorkouts(recentWorkoutsData || [])
-      await loadCardioData(currentUser)
-      
-    } catch (error) {
-      console.error('Error loading data:', error)
-    }
-  }
-
-  const createDefaultExercises = async () => {
-    const defaultExercises = [
-      { name: 'Squat', category: 'Legs' },
-      { name: 'Bench Press', category: 'Chest' },
-      { name: 'Bent-Over Row', category: 'Back' },
-      { name: 'Overhead Press', category: 'Shoulders' },
-      { name: 'Deadlift', category: 'Back' },
-      { name: 'Bicep Curl', category: 'Arms' },
-      { name: 'Calf Raise', category: 'Legs' }
-    ]
-
-    try {
-      const { error } = await supabase
-        .from('exercises')
-        .insert(defaultExercises)
-
-      if (error) throw error
-    } catch (error) {
-      console.error('Error creating default exercises:', error)
-    }
-  }
-
-  const createDefaultWeights = async (userId, exercises) => {
-    const defaultWeights = exercises.map(exercise => ({
-      user_id: userId,
-      exercise_id: exercise.id,
-      prescribed_weight: 20 // Default starting weight
-    }))
-
-    try {
-      const { error } = await supabase
-        .from('user_exercise_weights')
-        .insert(defaultWeights)
-
-      if (error) throw error
-    } catch (error) {
-      console.error('Error creating default weights:', error)
-    }
-  }
-
-  const loadCardioData = async (currentUser) => {
-    if (!currentUser) return
-    
-    try {
-      const { data: cardioData } = await supabase
-        .from('cardio_sessions')
-        .select('*')
-        .eq('user_id', currentUser.id)
-        .order('workout_date', { ascending: false })
-        .limit(5)
-
-      setRecentCardio(cardioData || [])
-
-      // Calculate 4x4 tracking
-      const today = new Date()
-      const currentSunday = getNextSunday(today)
-      
-      const { data: last4x4 } = await supabase
-        .from('cardio_sessions')
-        .select('workout_date')
-        .eq('user_id', currentUser.id)
-        .eq('is_4x4', true)
-        .order('workout_date', { ascending: false })
-        .limit(1)
-
-      let nextDueDate = currentSunday
-      if (last4x4 && last4x4.length > 0) {
-        const lastDate = new Date(last4x4[0].workout_date)
-        const lastSunday = getNextSunday(lastDate)
-        nextDueDate = new Date(lastSunday)
-        nextDueDate.setDate(nextDueDate.getDate() + 7)
-      }
-
-      setNext4x4Date(nextDueDate)
-
-      // Calculate missed 4x4 sessions
-      const twelveWeeksAgo = new Date()
-      twelveWeeksAgo.setDate(twelveWeeksAgo.getDate() - (12 * 7))
-      
-      const { data: recent4x4s } = await supabase
-        .from('cardio_sessions')
-        .select('workout_date')
-        .eq('user_id', currentUser.id)
-        .eq('is_4x4', true)
-        .gte('workout_date', twelveWeeksAgo.toISOString().split('T')[0])
-
-      const completedWeeks = new Set()
-      recent4x4s?.forEach(session => {
-        const date = new Date(session.workout_date)
-        const weekStart = getWeekStart(date)
-        completedWeeks.add(weekStart.toISOString().split('T')[0])
-      })
-
-      const missedCount = 12 - completedWeeks.size
-      setMissed4x4Count(Math.max(0, missedCount))
-
-      // Calculate Zone 2 minutes
-      const sevenDaysAgo = new Date()
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7)
-      
-      const { data: recentCardioForZone2 } = await supabase
-        .from('cardio_sessions')
-        .select('duration_minutes, is_4x4')
-        .eq('user_id', currentUser.id)
-        .gte('workout_date', sevenDaysAgo.toISOString().split('T')[0])
-
-      const totalZone2Minutes = recentCardioForZone2?.reduce((sum, session) => {
-        return session.is_4x4 ? sum : sum + session.duration_minutes
-      }, 0) || 0
-      
-      setZone2Minutes(totalZone2Minutes)
-
-    } catch (error) {
-      console.error('Error loading cardio data:', error)
-    }
-  }
-
-  // Utility functions
-  const getNextSunday = (date) => {
-    const result = new Date(date)
-    result.setDate(result.getDate() + (7 - result.getDay()) % 7)
-    return result
-  }
-
-  const getWeekStart = (date) => {
-    const result = new Date(date)
-    result.setDate(result.getDate() - result.getDay())
-    return result
-  }
-
-  const getNextDay = (currentDay) => {
-    const dayOrder = ['Light', 'Medium', 'Heavy']
-    const currentIndex = dayOrder.indexOf(currentDay)
-    return dayOrder[(currentIndex + 1) % dayOrder.length]
-  }
-
-  const calculateWorkoutWeight = (prescribedWeight, dayType) => {
-    const multipliers = { Light: 0.8, Medium: 0.9, Heavy: 1.0 }
-    return Math.round(prescribedWeight * multipliers[dayType] * 4) / 4
-  }
-
-  const getRepsForWeek = (week) => {
-    return 6 + week + 1
-  }
-
-  const formatDate = (date) => {
-    return date.toLocaleDateString('en-GB', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short'
-    })
-  }
-
-  const formatDateString = (dateString) => {
-    return new Date(dateString).toLocaleDateString('en-GB', {
-      weekday: 'short',
-      day: 'numeric',
-      month: 'short'
-    })
-  }
-
-  const getWorkoutSummary = (workout) => {
-    if (!workout.workout_sets) return 'No sets logged'
-    
-    const completedSets = workout.workout_sets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
-    const totalSets = workout.workout_sets.length
-    
-    return `${completedSets.length}/${totalSets} sets completed`
-  }
-
-  const isLevelUpEligible = (exerciseId, sets = workoutSets) => {
-    if (currentCycle.week !== 5 || currentCycle.day !== 'Heavy') {
-      return false
-    }
-    
-    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
-    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
-    
-    return completedSets.length >= 2
-  }
-
-  const getWeeklyWorkoutCount = () => {
-    const today = new Date()
-    const startOfWeek = new Date(today)
-    const dayOfWeek = today.getDay()
-    const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1
-    startOfWeek.setDate(today.getDate() - daysFromMonday)
-    
-    return recentWorkouts.filter(workout => {
-      const workoutDate = new Date(workout.workout_date)
-      return workoutDate >= startOfWeek
-    }).length
-  }
-
-  // Workout functions
-  const startWorkout = async () => {
-    try {
-      const { data: session, error } = await supabase
-        .from('workout_sessions')
-        .insert({
-          user_id: user.id,
-          workout_date: new Date().toISOString().split('T')[0],
-          week_number: currentCycle.week,
-          day_type: currentCycle.day,
-          cycle_number: currentCycle.cycle
-        })
-        .select()
-        .single()
-
-      if (error) throw error
-
-      setCurrentWorkout(session)
-      setIsEditingCompletedWorkout(false)
-
-      const sets = []
-      exercises.forEach(exercise => {
-        const prescribedWeight = userWeights[exercise.id] || 0
-        const workoutWeight = calculateWorkoutWeight(prescribedWeight, currentCycle.day)
-        const reps = getRepsForWeek(currentCycle.week)
-
-        for (let i = 1; i <= 2; i++) {
-          sets.push({
-            exercise_id: exercise.id,
-            exercise_name: exercise.name,
-            prescribed_weight: workoutWeight,
-            prescribed_reps: reps,
-            set_number: i,
-            status: 'Incomplete',
-            session_id: session.id
-          })
-        }
-      })
-
-      setWorkoutSets(sets)
-    } catch (error) {
-      console.error('Error starting workout:', error)
-    }
-  }
-
-  const logSet = async (setIndex, actualWeight, actualReps) => {
-    const set = workoutSets[setIndex]
-    let status = 'Incomplete'
-
-    if (actualReps >= set.prescribed_reps && actualWeight >= set.prescribed_weight) {
-      status = actualReps > set.prescribed_reps || actualWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
-    }
-
-    try {
-      let setId
-      
-      if (set.set_id) {
-        await supabase
-          .from('workout_sets')
-          .update({
-            prescribed_weight: set.prescribed_weight,
-            actual_weight: actualWeight,
-            prescribed_reps: set.prescribed_reps,
-            actual_reps: actualReps,
-            status: status
-          })
-          .eq('id', set.set_id)
-        
-        setId = set.set_id
-      } else {
-        const { data: newSet } = await supabase
-          .from('workout_sets')
-          .insert({
-            user_id: user.id,
-            session_id: set.session_id,
-            exercise_id: set.exercise_id,
-            prescribed_weight: set.prescribed_weight,
-            actual_weight: actualWeight,
-            prescribed_reps: set.prescribed_reps,
-            actual_reps: actualReps,
-            set_number: set.set_number,
-            status: status
-          })
-          .select()
-          .single()
-        
-        setId = newSet.id
-      }
-
-      const updatedSets = [...workoutSets]
-      updatedSets[setIndex] = {
-        ...set,
-        actual_weight: actualWeight,
-        actual_reps: actualReps,
-        status: status,
-        logged: true,
-        set_id: setId
-      }
-      setWorkoutSets(updatedSets)
-
-      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
-        checkForLevelUp(set.exercise_id, updatedSets)
-      }
-
-    } catch (error) {
-      console.error('Error logging set:', error)
-    }
-  }
-
-  const checkForLevelUp = async (exerciseId, sets) => {
-    const exerciseSets = sets.filter(s => s.exercise_id === exerciseId && s.logged)
-    const completedSets = exerciseSets.filter(s => s.status === 'Complete' || s.status === 'Exceeded')
-
-    if (completedSets.length >= 2) {
-      const currentWeight = userWeights[exerciseId]
-      const newWeight = Math.round(currentWeight * 1.1 * 4) / 4
-
-      try {
-        await supabase
-          .from('user_exercise_weights')
-          .update({ prescribed_weight: newWeight, updated_at: new Date().toISOString() })
-          .eq('exercise_id', exerciseId)
-          .eq('user_id', user.id)
-
-        setUserWeights(prev => ({
-          ...prev,
-          [exerciseId]: newWeight
-        }))
-
-        const exerciseName = exercises.find(e => e.id === exerciseId)?.name
-        alert(`🎉 LEVEL UP! ${exerciseName} increased to ${newWeight}kg`)
-      } catch (error) {
-        console.error('Error updating weight:', error)
-      }
-    }
-  }
-
-  const finishWorkout = () => {
-    setCurrentWorkout(null)
-    setWorkoutSets([])
-    setIsEditingCompletedWorkout(false)
-    loadData(user)
-  }
-
-  const exitWorkout = () => {
-    if (isEditingCompletedWorkout) {
-      if (confirm('Discard changes and return to workout history?')) {
-        setCurrentWorkout(null)
-        setWorkoutSets([])
-        setIsEditingCompletedWorkout(false)
-        loadData(user)
-      }
-    } else {
-      if (confirm('Are you sure you want to exit this workout? Your progress will be saved but the workout will remain incomplete.')) {
-        setCurrentWorkout(null)
-        setWorkoutSets([])
-        setIsEditingCompletedWorkout(false)
-      }
-    }
-  }
-
-  // Cardio functions
-  const addCardioWorkout = async () => {
-    if (!cardioType.trim() || cardioDuration <= 0) {
-      alert('Please enter exercise type and duration')
-      return
-    }
-
-    try {
-      await supabase
-        .from('cardio_sessions')
-        .insert({
-          user_id: user.id,
-          workout_date: new Date().toISOString().split('T')[0],
-          exercise_type: cardioType,
-          duration_minutes: cardioDuration,
-          is_4x4: cardioIs4x4
-        })
-
-      setCardioType('')
-      setCardioDuration(0)
-      setCardioIs4x4(false)
-      setShowCardioDialog(false)
-
-      loadCardioData(user)
-
-      const message = `Cardio workout logged: ${cardioType} for ${cardioDuration} minutes${cardioIs4x4 ? ' (Norwegian 4x4)' : ''}`
-      alert(message)
-
-    } catch (error) {
-      console.error('Error adding cardio workout:', error)
-      alert('Failed to log cardio workout')
-    }
-  }
-
-  // Weight management functions
-  const updateWeight = async (exerciseId, newWeight) => {
-    try {
-      await supabase
-        .from('user_exercise_weights')
-        .update({ prescribed_weight: newWeight })
-        .eq('exercise_id', exerciseId)
-        .eq('user_id', user.id)
-
-      setUserWeights(prev => ({
-        ...prev,
-        [exerciseId]: newWeight
-      }))
-    } catch (error) {
-      console.error('Error updating weight:', error)
-    }
-  }
-
-  // Workout history functions
-  const loadAllWorkouts = async () => {
-    try {
-      const { data: allWorkoutsData } = await supabase
-        .from('workout_sessions')
-        .select(`
-          *,
-          workout_sets (
-            id,
-            exercise_id,
-            actual_weight,
-            actual_reps,
-            status,
-            exercises (name)
-          )
-        `)
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-      
-      setAllWorkouts(allWorkoutsData || [])
-      setShowAllWorkouts(true)
-    } catch (error) {
-      console.error('Error loading all workouts:', error)
-    }
-  }
-
-  const loadWorkoutDetails = async (workout) => {
-    try {
-      const { data: setsData } = await supabase
-        .from('workout_sets')
-        .select(`
-          *,
-          exercises (name)
-        `)
-        .eq('session_id', workout.id)
-        .eq('user_id', user.id)
-        .order('exercise_id', { ascending: true })
-        .order('set_number', { ascending: true })
-      
-      setWorkoutDetails(setsData || [])
-      setSelectedWorkout(workout)
-    } catch (error) {
-      console.error('Error loading workout details:', error)
-    }
-  }
-
-  const deleteWorkout = async (workoutId) => {
-    if (!confirm('Are you sure you want to delete this workout? This action cannot be undone.')) {
-      return
-    }
-
-    try {
-      await supabase
-        .from('workout_sets')
-        .delete()
-        .eq('session_id', workoutId)
-        .eq('user_id', user.id)
-
-      await supabase
-        .from('workout_sessions')
-        .delete()
-        .eq('id', workoutId)
-        .eq('user_id', user.id)
-
-      loadData(user)
-      if (showAllWorkouts) {
-        loadAllWorkouts()
-      }
-      
-      if (selectedWorkout?.id === workoutId) {
-        setSelectedWorkout(null)
-      }
-
-      alert('Workout deleted successfully!')
-    } catch (error) {
-      console.error('Error deleting workout:', error)
-      alert('Failed to delete workout. Please try again.')
-    }
-  }
-
-  // Set editing functions
-  const startEditSet = (set) => {
-    setEditingSet(set.id)
-    setEditWeight(set.actual_weight)
-    setEditReps(set.actual_reps)
-  }
-
-  const saveEditSet = async (setId) => {
-    try {
-      const set = workoutDetails.find(s => s.id === setId)
-      let newStatus = 'Incomplete'
-      
-      if (editReps >= set.prescribed_reps && editWeight >= set.prescribed_weight) {
-        newStatus = editReps > set.prescribed_reps || editWeight > set.prescribed_weight ? 'Exceeded' : 'Complete'
-      }
-
-      await supabase
-        .from('workout_sets')
-        .update({
-          actual_weight: editWeight,
-          actual_reps: editReps,
-          status: newStatus
-        })
-        .eq('id', setId)
-
-      setWorkoutDetails(prev => prev.map(s => 
-        s.id === setId 
-          ? { ...s, actual_weight: editWeight, actual_reps: editReps, status: newStatus }
-          : s
-      ))
-
-      setEditingSet(null)
-      loadData(user)
-      if (showAllWorkouts) {
-        loadAllWorkouts()
-      }
-
-    } catch (error) {
-      console.error('Error updating set:', error)
-      alert('Failed to update set. Please try again.')
-    }
-  }
-
-  const cancelEditSet = () => {
-    setEditingSet(null)
-    setEditWeight(0)
-    setEditReps(0)
-  }
-
-  const deleteSet = async (setId) => {
-    if (!confirm('Are you sure you want to delete this set?')) {
-      return
-    }
-
-    try {
-      await supabase
-        .from('workout_sets')
-        .delete()
-        .eq('id', setId)
-
-      setWorkoutDetails(prev => prev.filter(s => s.id !== setId))
-      loadData(user)
-      if (showAllWorkouts) {
-        loadAllWorkouts()
-      }
-
-    } catch (error) {
-      console.error('Error deleting set:', error)
-      alert('Failed to delete set. Please try again.')
-    }
-  }
-
-  // Workout editing functions
-  const editWorkout = async (workout) => {
-    try {
-      setCurrentWorkout(workout)
-      setIsEditingCompletedWorkout(true)
-      
-      const { data: existingSets } = await supabase
-        .from('workout_sets')
-        .select(`
-          *,
-          exercises (name)
-        `)
-        .eq('session_id', workout.id)
-        .eq('user_id', user.id)
-        .order('exercise_id')
-        .order('set_number')
-
-      const convertedSets = existingSets.map(set => ({
-        exercise_id: set.exercise_id,
-        exercise_name: set.exercises.name,
-        prescribed_weight: set.prescribed_weight,
-        prescribed_reps: set.prescribed_reps,
-        set_number: set.set_number,
-        status: set.status,
-        session_id: set.session_id,
-        actual_weight: set.actual_weight,
-        actual_reps: set.actual_reps,
-        logged: true,
-        set_id: set.id
-      }))
-
-      const existingExerciseIds = new Set(existingSets.map(s => s.exercise_id))
-      const reps = getRepsForWeek(workout.week_number)
-      
-      exercises.forEach(exercise => {
-        if (!existingExerciseIds.has(exercise.id)) {
-          const prescribedWeight = userWeights[exercise.id] || 0
-          const workoutWeight = calculateWorkoutWeight(prescribedWeight, workout.day_type)
-          
-          for (let i = 1; i <= 2; i++) {
-            convertedSets.push({
-              exercise_id: exercise.id,
-              exercise_name: exercise.name,
-              prescribed_weight: workoutWeight,
-              prescribed_reps: reps,
-              set_number: i,
-              status: 'Incomplete',
-              session_id: workout.id,
-              logged: false
-            })
-          }
-        }
-      })
-
-      convertedSets.sort((a, b) => {
-        if (a.exercise_name !== b.exercise_name) {
-          return a.exercise_name.localeCompare(b.exercise_name)
-        }
-        return a.set_number - b.set_number
-      })
-
-      setWorkoutSets(convertedSets)
-      
-      setCurrentCycle({
-        week: workout.week_number,
-        day: workout.day_type,
-        cycle: workout.cycle_number
-      })
-
-      setSelectedWorkout(null)
-      
-    } catch (error) {
-      console.error('Error editing workout:', error)
-      alert('Failed to load workout for editing. Please try again.')
-    }
-  }
-
-  // Set management functions - FIXED VERSIONS
-  const addPrescribedSet = async (exerciseId, weight, reps) => {
-    try {
-      const exercise = exercises.find(e => e.id === exerciseId)
-      const nextSetNumber = getNextSetNumber(exerciseId)
-      
-      const { data: newSet } = await supabase
-        .from('workout_sets')
-        .insert({
-          user_id: user.id,
-          session_id: currentWorkout.id,
-          exercise_id: exerciseId,
-          prescribed_weight: weight,
-          actual_weight: weight,
-          prescribed_reps: reps,
-          actual_reps: reps,
-          set_number: nextSetNumber,
-          status: 'Complete'
-        })
-        .select()
-        .single()
-
-      const newWorkoutSet = {
-        exercise_id: exerciseId,
-        exercise_name: exercise.name,
-        prescribed_weight: weight,
-        prescribed_reps: reps,
-        actual_weight: weight,
-        actual_reps: reps,
-        set_number: nextSetNumber,
-        status: 'Complete',
-        session_id: currentWorkout.id,
-        logged: true,
-        set_id: newSet.id
-      }
-
-      setWorkoutSets(prev => [...prev, newWorkoutSet])
-
-      if (currentCycle.week === 5 && currentCycle.day === 'Heavy') {
-        checkForLevelUp(exerciseId, [...workoutSets, newWorkoutSet])
-      }
-
-    } catch (error) {
-      console.error('Error adding prescribed set:', error)
-    }
-  }
+}
