@@ -1059,8 +1059,8 @@ export default function WorkoutTracker() {
       { name: 'Bench Press', category: 'Chest' },
       { name: 'Bent-Over Row', category: 'Back' },
       { name: 'Overhead Press', category: 'Shoulders' },
-      { name: 'Deadlift', category: 'Back' }
-      { name: 'Bicep Curl', category: 'Arms' }
+      { name: 'Deadlift', category: 'Back' },
+      { name: 'Bicep Curl', category: 'Arms' },
       { name: 'Calf Raise', category: 'Legs' }
     ]
 
