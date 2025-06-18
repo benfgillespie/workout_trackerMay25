@@ -1,3 +1,5 @@
+"use client"
+
 // Part 1: Imports and State Setup
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js'
