@@ -4,8 +4,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react'
 import { createClient } from '@supabase/supabase-js'
 
-const supabaseUrl = 'https://your-supabase-url.supabase.co'
-const supabaseKey = 'your-supabase-anon-key'
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
 const supabase = createClient(supabaseUrl, supabaseKey)
 
 // Cache for exercises data
